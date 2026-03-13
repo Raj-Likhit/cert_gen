@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+backend/venv/
+.venv/
+env/
+.env/
+vh_env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build/Dist
+dist/
+build/
+backend/app/temp_certs/
+frontend/dist/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Desktop Services
+.DS_Store
+Thumbs.db
+
+# Secrets/Config
+admin_key.txt
+config.json
+.supabase/
+*.pem
+*.key
+
+# Local Assets (Keep templates, ignore generated)
+# assets/templates/
+# !assets/templates/.gitkeep
+assets/generated/

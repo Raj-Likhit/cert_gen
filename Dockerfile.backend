@@ -1,0 +1,37 @@
+# Use an official Python runtime as a parent image
+FROM python:3.11-slim
+
+# Install system dependencies for OpenCV and Pillow
+RUN apt-get update && apt-get install -y \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Copy the requirements file into the container at /app
+COPY backend/requirements.txt .
+
+# Install any needed packages specified in requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of the backend code
+COPY backend/ /app/backend/
+COPY assets/ /app/assets/
+
+# Copy .env file if it exists (for local testing, production uses env vars)
+# COPY .env .
+
+# Set environment variables
+ENV PYTHONPATH=/app
+
+# Make port 8000 available to the world outside this container
+EXPOSE 8000
+
+# Install gunicorn for industrial process management
+RUN pip install --no-cache-dir gunicorn
+
+# Run gunicorn with uvicorn workers
+# We use 4 workers (adjustable) to handle concurrent CPU-bound image processing
+CMD ["gunicorn", "backend.app.main:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]
