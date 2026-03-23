@@ -97,8 +97,9 @@ FONTS_DIR=assets/fonts
 ## 💎 Features
 - **Obsidian Premium AI Aesthetic**: A sleek, dark-themed management interface.
 - **SHA-256 Verification**: Every certificate is uniquely hashed for 100% tamper-proof security.
+- **Pixel-Perfect Positioning**: Unified middle-alignment engine ensuring design consistency between editor and output (PNG/PDF).
 - **Real-time Analytics**: ROI tracking for claimed vs unclaimed certificates.
-- **Design Editor**: Interactive canvas for positioning participant name and QR codes.
+- **Design Editor**: Interactive canvas for sub-pixel precise placement of participant names and QR codes.
 
 ---
 **Maintained by**: Raj Likhit

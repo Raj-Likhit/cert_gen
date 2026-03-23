@@ -241,13 +241,13 @@ def generate_certificate_pdf(template_bytes_io, name, serial_number, cfg, base_u
         # Fallback if font metrics missing
         ascent = font_size * 0.8
 
+    # Vertically center by adjusting the Y baseline by roughly half the font size
+    # ReportLab doesn't have a 'middle' anchor like SVG or Pillow, so we manualy adjust.
+    y_offset = font_size * 0.3 # Empirical adjustment for vertical centering
     if is_centered:
-        # SVG text-anchor: middle matches drawCentredString
-        # We use the baseline directly to match SVG dominant-baseline: auto
-        c.drawCentredString(name_x_pt, name_y_pt, name)
+        c.drawCentredString(name_x_pt, name_y_pt - y_offset, name)
     else:
-        # SVG text-anchor: start matches drawString
-        c.drawString(name_x_pt, name_y_pt, name)
+        c.drawString(name_x_pt, name_y_pt - y_offset, name)
     qr_data = f"{base_url}/verify/{serial_number}"
     qr_size_px = qr_pos.get('size', 120)
     qr_size_pt = px_to_pt(qr_size_px)
@@ -302,13 +302,10 @@ def generate_certificate_png(template_bytes_io, name, serial_number, cfg, base_u
     # Target coordinates
     render_x = int(name_pos['x'])
     render_y = int(name_pos['y'])
-    
-    if is_centered:
-        # Manual centering to bypass potential anchor bugs
-        render_x = render_x - (text_w // 2)
-    
-    # Use standard 'lt' anchor now that we handled centering manually
-    draw.text((render_x, render_y), name, font=font, fill=text_color, anchor="ls", stroke_width=stroke_width, stroke_fill=stroke_color)
+    # Use middle vertical alignment ('m') to match SVG 'central'
+    v_anchor = "m"
+    h_anchor = "m" if is_centered else "l"
+    draw.text((render_x, render_y), name, font=font, fill=text_color, anchor=f"{h_anchor}{v_anchor}", stroke_width=stroke_width, stroke_fill=stroke_color)
     qr_data = f"{base_url}/verify/{serial_number}"
     qr_size = qr_pos.get('size', 120)
     qm = generate_qr_image(qr_data, qr_size)

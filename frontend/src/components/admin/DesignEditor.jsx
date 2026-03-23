@@ -58,7 +58,7 @@ export default function DesignEditor({
         if (!templateUrl) return;
         const img = new Image();
         img.onload = () => {
-            setImgSize({ width: img.width, height: img.height });
+            setImgSize({ width: img.naturalWidth, height: img.naturalHeight });
         };
         img.src = templateUrl;
     }, [templateUrl]);
@@ -351,21 +351,21 @@ export default function DesignEditor({
                                     fontWeight={fontWeight === 'Bold' ? 'bold' : 'normal'}
                                     fontStyle={isItalic ? 'italic' : 'normal'}
                                     textAnchor={isCentered ? "middle" : "start"}
-                                    dominantBaseline="auto"
+                                    dominantBaseline="central"
                                     style={{
                                         userSelect: 'none',
                                         stroke: strokeWidth > 0 ? strokeColor : 'none',
                                         strokeWidth: strokeWidth / 2
                                     }}
                                 >
-                                    {useLongName ? "MNS SIDDHARDHA KUMAR" : "Participant Name"}
+                                    {useLongName ? "ALEXANDER HAMILTON" : "Participant Name"}
                                 </text>
                                 {selectedId === 'name' && (
                                     <rect 
                                         x={isCentered ? namePos.x - 200 : namePos.x}
-                                        y={namePos.y - fontSize}
+                                        y={namePos.y - (fontSize / 2)}
                                         width={400}
-                                        height={fontSize * 1.5}
+                                        height={fontSize}
                                         fill="none"
                                         stroke="var(--color-accent)"
                                         strokeWidth={1 / scale}
