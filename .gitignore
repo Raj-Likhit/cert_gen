@@ -4,7 +4,9 @@ frontend/node_modules/
 backend/venv/
 .venv/
 env/
-.env/
+.env
+.env.*
+!.env.example
 vh_env/
 
 # Python
