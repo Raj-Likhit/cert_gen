@@ -17,6 +17,12 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from ..core import config
+import requests
+import re
+from supabase import create_client, Client
+
+# Supabase Client Initialization
+supabase_client: Client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
 
 # Asset Cache
 REGISTERED_FONTS = [
@@ -31,20 +37,25 @@ CACHE_CONFIG = None
 from ..core.logging_config import logger
 
 def register_custom_fonts():
+    """Dynamically register all TTF/OTF files in assets/fonts/ with ReportLab"""
+    logger.info(f"Scanning FONTS_DIR: {os.path.abspath(config.FONTS_DIR)}")
     if not os.path.exists(config.FONTS_DIR):
+        logger.warning(f"FONTS_DIR does not exist: {config.FONTS_DIR}")
         return
 
-    for filename in os.listdir(config.FONTS_DIR):
-        if filename.lower().endswith((".ttf", ".otf")):
+    files = os.listdir(config.FONTS_DIR)
+    logger.info(f"Found {len(files)} files in FONTS_DIR")
+    for f in files:
+        if f.lower().endswith((".ttf", ".otf")):
             try:
-                font_name = os.path.splitext(filename)[0]
-                font_path = os.path.join(config.FONTS_DIR, filename)
-                pdfmetrics.registerFont(TTFont(font_name, font_path))
-                if not any(f['name'] == font_name for f in REGISTERED_FONTS):
-                    REGISTERED_FONTS.append({"name": font_name, "type": "custom"})
-                print(f"Registered Font: {font_name} (Custom)")
+                name = os.path.splitext(f)[0]
+                path = os.path.join(config.FONTS_DIR, f)
+                pdfmetrics.registerFont(TTFont(name, path))
+                if not any(font_dict['name'] == name for font_dict in REGISTERED_FONTS):
+                    REGISTERED_FONTS.append({"name": name, "type": "custom", "filename": f})
+                logger.info(f"Registered custom font: {name}")
             except Exception as e:
-                print(f"Failed to register font {filename}: {e}")
+                logger.error(f"Failed to register font {f}: {e}")
 
 # Initial Registration
 def initialize_fonts():
@@ -55,6 +66,92 @@ def initialize_fonts():
     except:
         pass
     register_custom_fonts()
+
+    register_custom_fonts()
+
+def import_google_font(url: str):
+    """
+    Downloads a .ttf font from a Google Fonts URL.
+    Matches CSS rules to find direct download links for truetype variants.
+    """
+    if not url.startswith("https://fonts.googleapis.com/css"):
+        raise ValueError("Invalid Google Fonts URL")
+    
+    # Headers to force TTF response (Legacy Android Agents get TTF)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Linux; U; Android 2.2; en-us; Nexus One Build/FRF91) AppleWebKit/533.1 (KHTML, like Gecko) Version/4.0 Mobile Safari/533.1"
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        css_content = response.text
+        
+        # Regex to find @font-face blocks and extract family, weight, style, and URL
+        blocks = re.findall(r'@font-face\s*\{(.*?)\}', css_content, re.DOTALL)
+        
+        downloaded = []
+        for block in blocks:
+            family_match = re.search(r'font-family:\s*\'?([^\';]+)\'?', block)
+            style_match = re.search(r'font-style:\s*([^\';]+)', block)
+            weight_match = re.search(r'font-weight:\s*([^\';]+)', block)
+            url_match = re.search(r'url\((https://[^\)]+\.ttf)\)', block)
+            
+            if family_match and url_match:
+                family_name = family_match.group(1).replace(" ", "")
+                ttf_url = url_match.group(1)
+                style = style_match.group(1) if style_match else "normal"
+                weight = weight_match.group(1) if weight_match else "400"
+                
+                # Suffix mapping
+                suffix = ""
+                if weight in ["700", "bold"]:
+                    suffix = "-Bold"
+                if style == "italic":
+                    suffix += "Italic" if suffix else "-Italic"
+                if not suffix:
+                    suffix = "-Regular"
+                
+                filename = f"{family_name}{suffix}.ttf"
+                
+                # Check if already downloaded to avoid redundant work in same session
+                if any(d['filename'] == filename for d in downloaded): continue
+
+                logger.info(f"Downloading {filename} from {ttf_url}")
+                font_res = requests.get(ttf_url, timeout=10)
+                font_res.raise_for_status()
+                
+                file_path = os.path.join(config.FONTS_DIR, filename)
+                with open(file_path, "wb") as f:
+                    f.write(font_res.content)
+                
+                # Sync to Supabase Storage
+                try:
+                    supabase_client.storage.from_("fonts").upload(filename, font_res.content, {"content-type": "font/ttf", "upsert": "true"})
+                except Exception as se:
+                    logger.error(f"Supabase Font Sync Failed for {filename}: {se}")
+
+                downloaded.append({"name": family_name, "filename": filename, "style": style, "weight": weight})
+
+
+        # Re-register
+        register_custom_fonts()
+        return downloaded
+    except Exception as e:
+        logger.error(f"Google Font Import Failed: {e}")
+        raise e
+
+def sync_font_to_storage(filename: str, content: bytes):
+    """Sync a locally uploaded font to Supabase Storage"""
+    try:
+        supabase_client.storage.from_("fonts").upload(
+            filename, 
+            content, 
+            {"content-type": "font/ttf", "upsert": "true"}
+        )
+        logger.info(f"Supabase Font Sync Success: {filename}")
+    except Exception as e:
+        logger.error(f"Supabase Font Sync Failed: {e}")
 
 def load_assets_to_cache():
     """Industrial Optimization: Pre-loads assets to RAM to eliminate Disk I/O latency."""
@@ -87,19 +184,6 @@ def px_to_pt(px):
 def hex_to_rgb(hex_color):
     hex_color = hex_color.lstrip('#')
     return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-
-def generate_qr_image(data, size_px):
-    qr = qrcode.QRCode(
-        version=1,
-        error_correction=qrcode.constants.ERROR_CORRECT_H,
-        box_size=10,
-        border=0,
-    )
-    qr.add_data(data)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="transparent").convert('RGBA')
-    img = img.resize((size_px, size_px), Image.Resampling.LANCZOS)
-    return img
 
 def detect_name_line_cv2(pil_image):
     try:
@@ -203,7 +287,6 @@ def generate_certificate_pdf(template_bytes_io, name, serial_number, cfg, base_u
     c = canvas.Canvas(buffer, pagesize=(iw_pt, ih_pt))
     c.drawImage(img_reader, 0, 0, width=iw_pt, height=ih_pt)
     name_pos = cfg.get('name_pos', {'x': iw_px/2, 'y': ih_px/2})
-    qr_pos = cfg.get('qr_pos', {'x': 100, 'y': 100, 'size': 120})
     font_fam = cfg.get('font_family', 'Helvetica')
     text_color = cfg.get('text_color', '#000000')
     name_x_pt = px_to_pt(name_pos['x'])
@@ -211,20 +294,90 @@ def generate_certificate_pdf(template_bytes_io, name, serial_number, cfg, base_u
     name_y_pt = ih_pt - px_to_pt(name_y_raw_px)
     weight = cfg.get('font_weight', 'Regular')
     is_italic = cfg.get('is_italic', False)
-    pdf_font = 'Helvetica' # Logic simplified for brevity, ideally reuse previous complex selection
-    if "serif" in font_fam.lower():
-        pdf_font = 'Times-BoldItalic' if weight == "Bold" and is_italic else 'Times-Bold' if weight == "Bold" else 'Times-Italic' if is_italic else 'Times-Roman'
-    elif "mono" in font_fam.lower():
-        pdf_font = 'Courier-BoldOblique' if weight == "Bold" and is_italic else 'Courier-Bold' if weight == "Bold" else 'Courier-Oblique' if is_italic else 'Courier'
-    else:
-        pdf_font = 'Helvetica-BoldOblique' if weight == "Bold" and is_italic else 'Helvetica-Bold' if weight == "Bold" else 'Helvetica-Oblique' if is_italic else 'Helvetica'
-    base_font_size = cfg.get('font_size', 48)
-    font_size = int(base_font_size * 0.75)
+    # --- Robust Font Resolution ---
+    pdf_font = 'Helvetica'
+    weight = cfg.get('font_weight', 'Regular')
+    is_italic = cfg.get('is_italic', False)
+    
+    # Standard 14/Common Aliases Mapping
+    family_map = {
+        "times new roman": "Times",
+        "times-roman": "Times",
+        "serif": "Times",
+        "arial": "Helvetica",
+        "sans-serif": "Helvetica",
+        "courier new": "Courier",
+        "mono": "Courier"
+    }
+    
+    base_family = family_map.get(font_fam.lower(), font_fam)
+    
+    # Determine Variant Suffix
+    variant = "Regular"
+    if weight == "Bold" and is_italic: variant = "BoldItalic"
+    elif weight == "Bold": variant = "Bold"
+    elif is_italic: variant = "Italic"
+
+    # Greedy Search in Registered Fonts
+    registered_fonts = pdfmetrics.getRegisteredFontNames()
+    font_lookup_lower = {f.lower(): f for f in registered_fonts}
+    
+    # Try 1: Exact Family-Variant (e.g., SpaceGrotesk-Bold)
+    targets = [
+        f"{base_family}-{variant}",
+        f"{base_family}{variant}",
+        f"{base_family}_{variant}",
+        f"{base_family} {variant}",
+        base_family if variant == "Regular" else None
+    ]
+    
+    found = False
+    for t in filter(None, targets):
+        if t.lower() in font_lookup_lower:
+            pdf_font = font_lookup_lower[t.lower()]
+            found = True
+            break
+            
+    # Try 2: Standard Fallbacks if custom fails
+    if not found:
+        # Check if the base family itself is registered (synthetic fallback)
+        if base_family.lower() in font_lookup_lower:
+            pdf_font = font_lookup_lower[base_family.lower()]
+            found = True
+            logger.info(f"Using synthetic fallback for {base_family}-{variant} via base font {pdf_font}")
+        elif base_family.lower() in ["times", "helvetica", "courier"]:
+            # ReportLab standard font naming: Helvetica-Bold, Times-Italic, etc.
+            sep = "-" if base_family.lower() != "times" or variant != "Regular" else ""
+            if base_family.lower() == "times" and variant == "Regular": 
+                pdf_font = "Times-Roman"
+            else:
+                pdf_font = f"{base_family.capitalize()}{sep}{variant}"
+            # Final sanity check for standard names
+            if pdf_font not in registered_fonts:
+                # Last resort standard mapping
+                mapping = {"Bold": "Bold", "Italic": "Oblique", "BoldItalic": "BoldOblique"}
+                pdf_font = f"{base_family.capitalize()}-{mapping.get(variant, '')}".strip('-')
+        else:
+            logger.warning(f"Font variant '{base_family}-{variant}' not found. Falling back to Helvetica.")
+            pdf_font = 'Helvetica-Bold' if weight == "Bold" else 'Helvetica'
+    
+    logger.info(f"Resolved PDF Font: {pdf_font} for requested {font_fam} ({weight})")
+    # --- End Font Resolution ---
+
+    base_font_size = cfg.get('font_size', 48) or 48
+    # Scaling Factor: 1.333 to match Browser (96dpi) vs PDF (72dpi)
+    font_size = int(base_font_size * 1.333) 
+    
+    # Calculate text width and handle wrapping/scaling
     text_w = c.stringWidth(name, pdf_font, font_size)
-    max_w_pt = px_to_pt(name_pos.get('max_width', 400))
-    while text_w > max_w_pt and font_size > 8:
-        font_size -= 1
+    
+    # Allow 90% of page width instead of hardcoded 400pt
+    available_w = iw_pt * 0.9
+    
+    while text_w > available_w and font_size > 12:
+        font_size -= 2
         text_w = c.stringWidth(name, pdf_font, font_size)
+        
     c.setFont(pdf_font, font_size)
     r, g, b = hex_to_rgb(text_color)
     c.setFillColorRGB(r/255.0, g/255.0, b/255.0)
@@ -241,109 +394,109 @@ def generate_certificate_pdf(template_bytes_io, name, serial_number, cfg, base_u
         # Fallback if font metrics missing
         ascent = font_size * 0.8
 
-    # Vertically center by adjusting the Y baseline by roughly half the font size
-    # ReportLab doesn't have a 'middle' anchor like SVG or Pillow, so we manualy adjust.
-    y_offset = font_size * 0.3 # Empirical adjustment for vertical centering
-    if is_centered:
-        c.drawCentredString(name_x_pt, name_y_pt - y_offset, name)
+    # Handle Outline (Stroke)
+    stroke_w = cfg.get('stroke_width', 0)
+    stroke_c = cfg.get('stroke_color', '#000000')
+    if stroke_w > 0:
+        sr, sg, sb = hex_to_rgb(stroke_c)
+        c.setStrokeColorRGB(sr/255.0, sg/255.0, sb/255.0)
+        c.setLineWidth(stroke_w / 2) # Divide by 2 to match SVG behavior typically
+        c._code.append("2 Tr") # Fill and Stroke
     else:
-        c.drawString(name_x_pt, name_y_pt - y_offset, name)
-    qr_data = f"{base_url}/verify/{serial_number}"
-    qr_size_px = qr_pos.get('size', 120)
-    qr_size_pt = px_to_pt(qr_size_px)
-    qr_img = generate_qr_image(qr_data, qr_size_px)
-    img_byte_arr = io.BytesIO()
-    qr_img.save(img_byte_arr, format='PNG')
-    img_byte_arr.seek(0)
-    qr_x_pt = px_to_pt(qr_pos['x'])
-    qr_y_pt = ih_pt - px_to_pt(qr_pos['y']) - qr_size_pt
-    c.drawImage(ImageReader(img_byte_arr), qr_x_pt, qr_y_pt, width=qr_size_pt, height=qr_size_pt, mask='auto', preserveAspectRatio=True)
+        c._code.append("0 Tr") # Fill only
+
+    # --- Apply Synthetic Styles if needed ---
+    needs_synthetic_italic = is_italic and "italic" not in pdf_font.lower() and "oblique" not in pdf_font.lower()
+    needs_synthetic_bold = weight == "Bold" and "bold" not in pdf_font.lower()
+
+    if needs_synthetic_italic or needs_synthetic_bold:
+        c.saveState()
+        if needs_synthetic_italic:
+            # Skew the coordinate system for italics (approx 0.2 radians)
+            c.transform(1, 0, 0.2, 1, 0, 0)
+        
+        if needs_synthetic_bold:
+            # Embolden using a small stroke
+            c._code.append("2 Tr") # Fill and Stroke
+            c.setStrokeColorRGB(r/255.0, g/255.0, b/255.0)
+            c.setLineWidth(font_size * 0.03) # 3% of font size for moderate bolding
+
+    if is_centered:
+        c.drawCentredString(name_x_pt, name_y_pt, name)
+    else:
+        c.drawString(name_x_pt, name_y_pt, name)
+    
+    if needs_synthetic_italic or needs_synthetic_bold:
+        c.restoreState()
+
+    
+    # Reset render mode for following prints
+    c._code.append("0 Tr")
+
+    # Dynamic Header: Event Name
+    event_name = cfg.get('event_name', 'Certificate of Participation')
+    header_font_size = 20
+    c.setFont('Helvetica-Bold', header_font_size)
+    c.setFillColorRGB(0, 0, 0) # Black for header
+    # Pos: Top center
+    c.drawCentredString(iw_pt / 2, ih_pt - 100, event_name.upper())
+
+    # Dynamic Footer: Verification URL & Unique Code
+    verify_pos = cfg.get('verify_pos', {'x': 250, 'y': 100})
+    verify_x_pt = px_to_pt(verify_pos['x'])
+    verify_y_pt = ih_pt - px_to_pt(verify_pos['y'])
+    
+    # We use a slightly smaller font size for the verification URL, based on the main font size
+    footer_font_size = max(10, int(font_size * 0.35))
+    c.setFont(pdf_font, footer_font_size)
+    c.setFillColorRGB(0.2, 0.2, 0.2) 
+    
+    # Single Verification line: certgen.io/verify/ABCDEFG
+    verify_url = f"{base_url}/verify/{serial_number}".replace("http://", "").replace("https://", "")
+    
+    if is_centered:
+        c.drawCentredString(verify_x_pt, verify_y_pt, verify_url)
+    else:
+        c.drawString(verify_x_pt, verify_y_pt, verify_url)
+
+
     c.showPage()
     c.save()
     buffer.seek(0)
     return buffer
 
-def generate_certificate_png(template_bytes_io, name, serial_number, cfg, base_url="https://certgen.io"):
-    # Industrial Optimization: Use RAM-cached template if available
-    if CACHE_TEMPLATE and (not template_bytes_io or template_bytes_io.getbuffer().nbytes == 0):
-        base = Image.open(io.BytesIO(CACHE_TEMPLATE)).convert("RGBA")
-    else:
-        template_bytes_io.seek(0)
-        base = Image.open(template_bytes_io).convert("RGBA")
-        
-    draw = ImageDraw.Draw(base)
-    iw, ih = base.size
-    name_pos = cfg.get('name_pos', {'x': iw/2, 'y': ih/2})
-    qr_pos = cfg.get('qr_pos', {'x': 100, 'y': 100, 'size': 120})
-    font_fam = cfg.get('font_family', 'Helvetica')
-    text_color = cfg.get('text_color', '#000000')
-    font_size = cfg.get('font_size', 48)
-    weight = cfg.get('font_weight', 'Regular')
-    is_italic = cfg.get('is_italic', False)
-    font = get_pil_font(font_fam, font_size, weight, is_italic)
-    max_w_px = name_pos.get('max_width', 400)
-    if isinstance(font, ImageFont.FreeTypeFont):
-         while True:
-            left, top, right, bottom = draw.textbbox((0, 0), name, font=font)
-            width = right - left
-            if width <= max_w_px or font_size <= 10:
-                break
-            font_size -= 2
-            font = get_pil_font(font_fam, font_size, weight, is_italic)
-    is_centered = cfg.get('is_centered', False)
-    stroke_width = int(cfg.get('stroke_width', 0))
-    stroke_color = cfg.get('stroke_color', '#000000')
-    
-    # Calculate text width for precise centering
-    left, top, right, bottom = draw.textbbox((0, 0), name, font=font)
-    text_w = right - left
-    text_h = bottom - top
-    
-    # Target coordinates
-    render_x = int(name_pos['x'])
-    render_y = int(name_pos['y'])
-    # Use middle vertical alignment ('m') to match SVG 'central'
-    v_anchor = "m"
-    h_anchor = "m" if is_centered else "l"
-    draw.text((render_x, render_y), name, font=font, fill=text_color, anchor=f"{h_anchor}{v_anchor}", stroke_width=stroke_width, stroke_fill=stroke_color)
-    qr_data = f"{base_url}/verify/{serial_number}"
-    qr_size = qr_pos.get('size', 120)
-    qm = generate_qr_image(qr_data, qr_size)
-    base.paste(qm, (int(qr_pos['x']), int(qr_pos['y'])), qm)
-    out = io.BytesIO()
-    base.save(out, format="PNG")
-    out.seek(0)
-    return out
 
-def generate_serial(org="ORG"):
-    year = datetime.datetime.now().year
-    rand = ''.join(random.choices(string.hexdigits.upper(), k=6))
-    return f"{org}-{year}-{rand}"
+def generate_serial():
+    """Generates a unique 7-character alphanumeric code for verification."""
+    chars = string.ascii_letters + string.digits
+    return ''.join(random.choices(chars, k=7))
 
-# Global semaphores for resource throttling on Windows
-RENDER_SEMAPHORE = asyncio.Semaphore(3)
-STORAGE_SEMAPHORE = asyncio.Semaphore(2)
+
+# Global semaphores for resource throttling - Increased for event-grade throughput
+RENDER_SEMAPHORE = asyncio.Semaphore(15)
+STORAGE_SEMAPHORE = asyncio.Semaphore(20)
 
 async def process_claim(email: str, frontend_url: str, supabase: Any):
-    
+    email = email.strip().lower()
     logger.info(f"Processing claim for email: {email}")
-    res = supabase.table("Participants").select("*").eq("email", email).execute()
+    # Use .ilike for case-insensitive robust matching
+    res = supabase.table("Participants").select("*").ilike("email", email).execute()
     
     if not res.data:
         logger.warning(f"Claim failed: No participant found for {email}")
         return None, "No participant found"
 
     participant = res.data[0]
-    if participant.get("is_claimed") and participant.get("cert_url") and participant.get("cert_png_url"):
+    if participant.get("is_claimed") and participant.get("cert_url"):
         logger.info(f"Returning existing claim for {email}")
         return {
             "cert_url": participant.get("cert_url"),
-            "cert_png_url": participant.get("cert_png_url"),
-            "serial_number": participant.get("serial_number"),
+            "verification_code": participant.get("verification_code"),
             "name": participant.get("full_name")
         }, None
 
-    serial = participant.get('serial_number') or generate_serial()
+    serial = participant.get('verification_code') or generate_serial()
+
     name = participant['full_name']
     base_url = frontend_url.rstrip('/')
     
@@ -364,17 +517,12 @@ async def process_claim(email: str, frontend_url: str, supabase: Any):
             tio = io.BytesIO(template_io.getvalue())
             return generate_certificate_pdf(tio, name, serial, cfg, base_url)
             
-        def render_png_job():
-            tio = io.BytesIO(template_io.getvalue())
-            return generate_certificate_png(tio, name, serial, cfg, base_url)
-
         async with RENDER_SEMAPHORE:
             pdf_task = loop.run_in_executor(None, render_pdf_job)
-            png_task = loop.run_in_executor(None, render_png_job)
-            pdf_buffer, png_buffer = await asyncio.gather(pdf_task, png_task)
+            pdf_buffer = await pdf_task
         
-        # Immutable Verification (Hash-Lock)
-        pdf_hash = hashlib.sha256(pdf_buffer.getvalue()).hexdigest()
+        
+
         
         # Step 2: Parallel Uploading
         def upload_f(fname, data, ctype):
@@ -383,27 +531,24 @@ async def process_claim(email: str, frontend_url: str, supabase: Any):
 
         async with STORAGE_SEMAPHORE:
             pdf_fut = loop.run_in_executor(None, upload_f, f"{serial}.pdf", pdf_buffer.getvalue(), "application/pdf")
-            png_fut = loop.run_in_executor(None, upload_f, f"{serial}.png", png_buffer.getvalue(), "image/png")
-            pdf_public_url, png_public_url = await asyncio.gather(pdf_fut, png_fut)
+            pdf_public_url = await pdf_fut
         
         # Step 3: Database Update
         update_data = {
             "is_claimed": True,
             "claimed_at": datetime.datetime.now().isoformat(),
             "cert_url": pdf_public_url,
-            "cert_png_url": png_public_url,
-            "serial_number": serial,
-            "cert_hash": pdf_hash
+            "verification_code": serial
         }
         supabase.table("Participants").update(update_data).eq("email", email).execute()
         
         logger.info(f"Successfully processed claim for {email}")
         return {
             "cert_url": pdf_public_url,
-            "cert_png_url": png_public_url,
-            "serial_number": serial,
+            "verification_code": serial,
             "name": name
         }, None
+
 
     except Exception as e:
         logger.error(f"Claim generation error for {email}: {str(e)}")
@@ -424,11 +569,12 @@ async def process_batch_import(participants: list, supabase: Any):
             try:
                 loop = asyncio.get_event_loop()
                 def db_op():
-                    existing = supabase.table("Participants").select("serial_number").eq("email", p.email).execute()
-                    serial = existing.data[0].get('serial_number') if existing.data else generate_serial()
-                    data = {"full_name": p.name, "email": p.email, "serial_number": serial}
+                    existing = supabase.table("Participants").select("verification_code").eq("email", p.email).execute()
+                    serial = existing.data[0].get('verification_code') if existing.data else generate_serial()
+                    data = {"full_name": p.name, "email": p.email, "verification_code": serial}
                     supabase.table("Participants").upsert(data, on_conflict="email").execute()
                     return serial
+
 
                 serial = await loop.run_in_executor(None, db_op)
                 return {"email": p.email, "status": "success", "serial": serial}
@@ -444,23 +590,32 @@ def load_config():
     if CACHE_CONFIG:
         return CACHE_CONFIG
 
+    # Primary: Load from Supabase
+    try:
+        res = supabase_client.table("LayoutConfig").select("config").limit(1).execute()
+        if res.data and res.data[0].get("config"):
+            cfg = res.data[0]["config"]
+            # Sync to local for resilience
+            save_config_local(cfg)
+            CACHE_CONFIG = cfg
+            return cfg
+    except Exception as e:
+        logger.warning(f"Supabase Config Load Failed, falling back to local: {e}")
+
+    # Fallback: Load from local file
     if os.path.exists(config.CONFIG_PATH):
         try:
             with open(config.CONFIG_PATH, "r") as f:
                 cfg = json.load(f)
-                # Defaults
-                keys = ["event_name", "font_family", "text_color", "is_centered", "font_weight", "is_italic", "stroke_width", "stroke_color", "font_size"]
-                defaults = ["Certificate of Participation", "Helvetica", "#000000", True, "Regular", False, 0, "#000000", 48]
-                for k, d in zip(keys, defaults):
-                    if k not in cfg: cfg[k] = d
                 CACHE_CONFIG = cfg
                 return cfg
         except:
             pass
+    
     return {
         'name_pos': {'x': 500, 'y': 400, 'max_width': 400},
-        'qr_pos': {'x': 800, 'y': 100, 'size': 120},
-        'page_size': (1000, 800),
+        'verify_pos': {'x': 250, 'y': 100},
+        'page_size': [1000, 800],
         'font_family': 'Helvetica',
         'text_color': '#000000',
         'event_name': 'Certificate of Participation',
@@ -472,12 +627,32 @@ def load_config():
         'font_size': 48
     }
 
+def save_config_local(cfg):
+    with open(config.CONFIG_PATH, "w") as f:
+        json.dump(cfg, f)
+
 def save_config(cfg):
     global CACHE_CONFIG
     CACHE_CONFIG = cfg
-    with open(config.CONFIG_PATH, "w") as f:
-        json.dump(cfg, f)
+    
+    # 1. Save Local
+    save_config_local(cfg)
+    
+    # 2. Sync to Supabase
+    try:
+        res = supabase_client.table("LayoutConfig").select("id").limit(1).execute()
+        if res.data:
+            supabase_client.table("LayoutConfig").update({"config": cfg}).eq("id", res.data[0]["id"]).execute()
+        else:
+            supabase_client.table("LayoutConfig").insert({"config": cfg}).execute()
+        logger.info("Supabase Config Synced")
+    except Exception as e:
+        logger.error(f"Supabase Config Sync Failed: {e}")
 
 # Industrial Initialization
 initialize_fonts()
 load_assets_to_cache()
+# Trigger Reload
+# Trigger Reload 2
+# Final Fix Trigger
+# QR Decommissioned 
