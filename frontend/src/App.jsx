@@ -57,7 +57,7 @@ function App() {
         <nav className="fixed top-0 w-full z-50 px-6 md:px-12 py-5 MD:py-6 flex justify-between items-center bg-bg/40 backdrop-blur-xl border-b border-white/5">
           <div className="flex items-center gap-3 md:gap-4 cursor-pointer group" onClick={() => navigate('participant')}>
             <div className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-white/5 flex items-center justify-center shadow-lg overflow-hidden">
-              <img src="/logo.png" alt="CertGen" className="w-7 h-7 md:w-8 md:h-8 object-contain" />
+              <img src="/logo.svg" alt="CertGen" className="w-7 h-7 md:w-8 md:h-8 object-contain" />
             </div>
             <div className="flex flex-col">
               <span className="font-semibold text-base md:text-lg tracking-tight leading-none text-white">CertGen</span>

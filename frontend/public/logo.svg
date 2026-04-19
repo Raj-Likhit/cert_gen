@@ -1,0 +1,14 @@
+<svg width="100" height="100" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Main Document Shape with rounded corners -->
+  <rect x="20" y="15" width="60" height="70" rx="12" fill="white" />
+  <rect x="20" y="15" width="60" height="70" rx="12" stroke="black" stroke-width="2"/>
+  
+  <!-- Stylized Lines representing text -->
+  <rect x="32" y="35" width="36" height="4" rx="2" fill="#E5E7EB"/>
+  <rect x="32" y="45" width="36" height="4" rx="2" fill="#E5E7EB"/>
+  <rect x="32" y="55" width="24" height="4" rx="2" fill="#E5E7EB"/>
+  
+  <!-- Decorative Seal/Circle with gold accent -->
+  <circle cx="70" cy="70" r="12" fill="#D4AF37" />
+  <path d="M65 70L68.5 73.5L75 67" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

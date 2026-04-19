@@ -111,7 +111,7 @@ export default function ParticipantClaim() {
                     <div className="p-12 text-center relative border-b border-white/5">
                         <div className="flex justify-center mb-8">
                             <div className="w-20 h-20 rounded-2xl bg-white/5 flex items-center justify-center shadow-lg transform -rotate-3 hover:rotate-0 transition-transform duration-500 overflow-hidden">
-                                <img src="/logo.png" alt="CertGen Logo" className="w-16 h-16 object-contain" />
+                                <img src="/logo.svg" alt="CertGen Logo" className="w-16 h-16 object-contain" />
                             </div>
                         </div>
 
