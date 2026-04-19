@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+pydantic
+python-dotenv
+python-multipart
+python-jose[cryptography]
+PyJWT
+supabase
+pillow
+reportlab
+opencv-python-headless
+numpy
+qrcode
+slowapi
+watchfiles
+requests

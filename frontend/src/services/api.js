@@ -1,7 +1,9 @@
 import axios from 'axios';
 
 const api = axios.create({
-    baseURL: 'http://localhost:8000',
+    // In production (Vercel), we want to use the internal /api route
+    // In local dev, we default to localhost:8000 (backend) or /api if proxied
+    baseURL: import.meta.env.VITE_API_URL || (import.meta.env.PROD ? '/api' : 'http://localhost:8000'),
     timeout: 30000,
 });
 

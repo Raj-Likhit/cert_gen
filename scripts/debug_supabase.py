@@ -7,11 +7,15 @@ import io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
-backend_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'backend'))
-if backend_path not in sys.path:
-    sys.path.append(backend_path)
+# Resolve paths for local execution
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
-from app.services import certificate_service
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+# Using the full path from the project root to satisfy IDE static analysis
+from backend.app.services import certificate_service
+
 c = certificate_service.supabase
 
 res_select = c.table("LayoutConfig").select("id, config").limit(1).execute()
