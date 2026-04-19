@@ -19,10 +19,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from ..core import config
 import requests
 import re
-from supabase import create_client, Client
-
-# Supabase Client Initialization
-supabase_client: Client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
+from ..core.supabase_client import supabase
 
 # Asset Cache
 REGISTERED_FONTS = [
@@ -127,7 +124,7 @@ def import_google_font(url: str):
                 
                 # Sync to Supabase Storage
                 try:
-                    supabase_client.storage.from_("fonts").upload(filename, font_res.content, {"content-type": "font/ttf", "upsert": "true"})
+                    supabase.storage.from_("fonts").upload(filename, font_res.content, {"content-type": "font/ttf", "upsert": "true"})
                 except Exception as se:
                     logger.error(f"Supabase Font Sync Failed for {filename}: {se}")
 
@@ -144,7 +141,7 @@ def import_google_font(url: str):
 def sync_font_to_storage(filename: str, content: bytes):
     """Sync a locally uploaded font to Supabase Storage"""
     try:
-        supabase_client.storage.from_("fonts").upload(
+        supabase.storage.from_("fonts").upload(
             filename, 
             content, 
             {"content-type": "font/ttf", "upsert": "true"}
@@ -153,20 +150,64 @@ def sync_font_to_storage(filename: str, content: bytes):
     except Exception as e:
         logger.error(f"Supabase Font Sync Failed: {e}")
 
+def get_template_bytes():
+    """Fetches the certificate template as bytes. Fallback chain: Memory -> Supabase -> Local File."""
+    global CACHE_TEMPLATE
+    if CACHE_TEMPLATE:
+        return CACHE_TEMPLATE
+
+    # 1. Try Supabase Storage
+    try:
+        data = supabase.storage.from_("assets").download("template.png")
+        if data:
+            CACHE_TEMPLATE = data
+            return data
+    except Exception as e:
+        logger.warning(f"Failed to fetch template from Supabase: {e}")
+
+    # 2. Try Local Filesystem (Initial load or local dev)
+    if os.path.exists(config.TEMPLATE_PATH):
+        try:
+            with open(config.TEMPLATE_PATH, "rb") as f:
+                data = f.read()
+                CACHE_TEMPLATE = data
+                return data
+        except:
+            pass
+    
+    return None
+
+def sync_fonts_from_storage():
+    """Ensures all fonts in Supabase are available in FONTS_DIR (Stateless compatibility)"""
+    try:
+        res = supabase.storage.from_("fonts").list()
+        for f_item in res:
+            f_name = f_item['name']
+            if f_name.startswith('.'): continue 
+            local_path = os.path.join(config.FONTS_DIR, f_name)
+            if not os.path.exists(local_path):
+                logger.info(f"Downloading missing font from cloud: {f_name}")
+                data = supabase.storage.from_("fonts").download(f_name)
+                with open(local_path, "wb") as f:
+                    f.write(data)
+    except Exception as e:
+        logger.error(f"Stateless font sync failed: {e}")
+
 def load_assets_to_cache():
     """Industrial Optimization: Pre-loads assets to RAM to eliminate Disk I/O latency."""
     global CACHE_TEMPLATE, CACHE_FONTS, CACHE_CONFIG
-    print("🚀 Initializing Industrial Asset Cache...")
+    logger.info("Initializing Stateless Asset Cache...")
+    
+    # NEW: Sync fonts from cloud to local (/tmp or assets)
+    sync_fonts_from_storage()
+    register_custom_fonts()
     
     # Cache Config
     CACHE_CONFIG = load_config()
-    print("✅ Config Cached")
+    print("Config Cached")
 
     # Cache Template
-    if os.path.exists(config.TEMPLATE_PATH):
-        with open(config.TEMPLATE_PATH, "rb") as f:
-            CACHE_TEMPLATE = f.read()
-            print(f"✅ Template Cached ({len(CACHE_TEMPLATE)} bytes)")
+    get_template_bytes()
     
     # Cache Base Fonts (Pillow objects)
     # We pre-cache common sizes to avoid repeated FreeType initialization
@@ -175,7 +216,7 @@ def load_assets_to_cache():
         CACHE_FONTS[f"Helvetica-{size}-Regular"] = get_pil_font("Helvetica", size)
         CACHE_FONTS[f"Helvetica-{size}-Bold"] = get_pil_font("Helvetica", size, weight="Bold")
     
-    print(f"✅ Pre-loaded {len(CACHE_FONTS)} font variants to RAM")
+    print(f"Pre-loaded {len(CACHE_FONTS)} font variants to RAM")
 
 
 def px_to_pt(px):
@@ -274,11 +315,16 @@ def get_pil_font(family, size, weight='Regular', is_italic=False):
     except:
         return ImageFont.load_default()
 
-def generate_certificate_pdf(template_bytes_io, name, serial_number, cfg, base_url="https://certgen.io"):
-    # Target use of CACHE_TEMPLATE if provided template_bytes_io is empty/generic
-    actual_content = template_bytes_io
-    if CACHE_TEMPLATE and (not template_bytes_io or template_bytes_io.getbuffer().nbytes == 0):
-        actual_content = io.BytesIO(CACHE_TEMPLATE)
+def generate_certificate_pdf(template_bytes_io, name, cfg, base_url="https://certgen.io"):
+    # --- Background Loading ---
+    template_data = get_template_bytes()
+    if not template_data:
+        # Fallback to provided BytesIO if it exists (for legacy/custom paths)
+        actual_content = template_bytes_io if template_bytes_io and template_bytes_io.getbuffer().nbytes > 0 else None
+        if not actual_content:
+            return None, "Template not found. Please upload one in the designer."
+    else:
+        actual_content = io.BytesIO(template_data)
 
     buffer = io.BytesIO()
     img_reader = ImageReader(actual_content)
@@ -365,8 +411,8 @@ def generate_certificate_pdf(template_bytes_io, name, serial_number, cfg, base_u
     # --- End Font Resolution ---
 
     base_font_size = cfg.get('font_size', 48) or 48
-    # Scaling Factor: 1.333 to match Browser (96dpi) vs PDF (72dpi)
-    font_size = int(base_font_size * 1.333) 
+    # Scaling Factor: Align with px_to_pt (0.75) to match Browser (96dpi) vs PDF (72dpi)
+    font_size = px_to_pt(base_font_size) 
     
     # Calculate text width and handle wrapping/scaling
     text_w = c.stringWidth(name, pdf_font, font_size)
@@ -400,7 +446,7 @@ def generate_certificate_pdf(template_bytes_io, name, serial_number, cfg, base_u
     if stroke_w > 0:
         sr, sg, sb = hex_to_rgb(stroke_c)
         c.setStrokeColorRGB(sr/255.0, sg/255.0, sb/255.0)
-        c.setLineWidth(stroke_w / 2) # Divide by 2 to match SVG behavior typically
+        c.setLineWidth(px_to_pt(stroke_w))
         c._code.append("2 Tr") # Fill and Stroke
     else:
         c._code.append("0 Tr") # Fill only
@@ -441,35 +487,12 @@ def generate_certificate_pdf(template_bytes_io, name, serial_number, cfg, base_u
     # Pos: Top center
     c.drawCentredString(iw_pt / 2, ih_pt - 100, event_name.upper())
 
-    # Dynamic Footer: Verification URL & Unique Code
-    verify_pos = cfg.get('verify_pos', {'x': 250, 'y': 100})
-    verify_x_pt = px_to_pt(verify_pos['x'])
-    verify_y_pt = ih_pt - px_to_pt(verify_pos['y'])
-    
-    # We use a slightly smaller font size for the verification URL, based on the main font size
-    footer_font_size = max(10, int(font_size * 0.35))
-    c.setFont(pdf_font, footer_font_size)
-    c.setFillColorRGB(0.2, 0.2, 0.2) 
-    
-    # Single Verification line: certgen.io/verify/ABCDEFG
-    verify_url = f"{base_url}/verify/{serial_number}".replace("http://", "").replace("https://", "")
-    
-    if is_centered:
-        c.drawCentredString(verify_x_pt, verify_y_pt, verify_url)
-    else:
-        c.drawString(verify_x_pt, verify_y_pt, verify_url)
-
-
     c.showPage()
     c.save()
     buffer.seek(0)
     return buffer
 
 
-def generate_serial():
-    """Generates a unique 7-character alphanumeric code for verification."""
-    chars = string.ascii_letters + string.digits
-    return ''.join(random.choices(chars, k=7))
 
 
 # Global semaphores for resource throttling - Increased for event-grade throughput
@@ -491,11 +514,8 @@ async def process_claim(email: str, frontend_url: str, supabase: Any):
         logger.info(f"Returning existing claim for {email}")
         return {
             "cert_url": participant.get("cert_url"),
-            "verification_code": participant.get("verification_code"),
             "name": participant.get("full_name")
         }, None
-
-    serial = participant.get('verification_code') or generate_serial()
 
     name = participant['full_name']
     base_url = frontend_url.rstrip('/')
@@ -515,7 +535,7 @@ async def process_claim(email: str, frontend_url: str, supabase: Any):
         # Step 1: Parallel Rendering - Create fresh copies for thread safety
         def render_pdf_job():
             tio = io.BytesIO(template_io.getvalue())
-            return generate_certificate_pdf(tio, name, serial, cfg, base_url)
+            return generate_certificate_pdf(tio, name, cfg, base_url)
             
         async with RENDER_SEMAPHORE:
             pdf_task = loop.run_in_executor(None, render_pdf_job)
@@ -530,22 +550,21 @@ async def process_claim(email: str, frontend_url: str, supabase: Any):
              return supabase.storage.from_("certificates").get_public_url(fname)
 
         async with STORAGE_SEMAPHORE:
-            pdf_fut = loop.run_in_executor(None, upload_f, f"{serial}.pdf", pdf_buffer.getvalue(), "application/pdf")
+            fname = f"{uuid.uuid4()}.pdf"
+            pdf_fut = loop.run_in_executor(None, upload_f, fname, pdf_buffer.getvalue(), "application/pdf")
             pdf_public_url = await pdf_fut
         
         # Step 3: Database Update
         update_data = {
             "is_claimed": True,
             "claimed_at": datetime.datetime.now().isoformat(),
-            "cert_url": pdf_public_url,
-            "verification_code": serial
+            "cert_url": pdf_public_url
         }
         supabase.table("Participants").update(update_data).eq("email", email).execute()
         
         logger.info(f"Successfully processed claim for {email}")
         return {
             "cert_url": pdf_public_url,
-            "verification_code": serial,
             "name": name
         }, None
 
@@ -569,15 +588,11 @@ async def process_batch_import(participants: list, supabase: Any):
             try:
                 loop = asyncio.get_event_loop()
                 def db_op():
-                    existing = supabase.table("Participants").select("verification_code").eq("email", p.email).execute()
-                    serial = existing.data[0].get('verification_code') if existing.data else generate_serial()
-                    data = {"full_name": p.name, "email": p.email, "verification_code": serial}
+                    data = {"full_name": p.name, "email": p.email}
                     supabase.table("Participants").upsert(data, on_conflict="email").execute()
-                    return serial
 
-
-                serial = await loop.run_in_executor(None, db_op)
-                return {"email": p.email, "status": "success", "serial": serial}
+                await loop.run_in_executor(None, db_op)
+                return {"email": p.email, "status": "success"}
             except Exception as e:
                 logger.error(f"Batch import error for {p.email}: {str(e)}")
                 return {"email": p.email, "status": "error", "error": str(e)}
@@ -592,7 +607,7 @@ def load_config():
 
     # Primary: Load from Supabase
     try:
-        res = supabase_client.table("LayoutConfig").select("config").limit(1).execute()
+        res = supabase.table("LayoutConfig").select("config").limit(1).execute()
         if res.data and res.data[0].get("config"):
             cfg = res.data[0]["config"]
             # Sync to local for resilience
@@ -600,7 +615,11 @@ def load_config():
             CACHE_CONFIG = cfg
             return cfg
     except Exception as e:
-        logger.warning(f"Supabase Config Load Failed, falling back to local: {e}")
+        err_msg = str(e)
+        if "521" in err_msg or "getaddrinfo" in err_msg:
+            logger.warning("Supabase project is offline/restoring. Falling back to local configuration.")
+        else:
+            logger.warning(f"Supabase Config Load Failed, falling back to local: {err_msg[:100]}")
 
     # Fallback: Load from local file
     if os.path.exists(config.CONFIG_PATH):
@@ -614,7 +633,6 @@ def load_config():
     
     return {
         'name_pos': {'x': 500, 'y': 400, 'max_width': 400},
-        'verify_pos': {'x': 250, 'y': 100},
         'page_size': [1000, 800],
         'font_family': 'Helvetica',
         'text_color': '#000000',
@@ -640,11 +658,11 @@ def save_config(cfg):
     
     # 2. Sync to Supabase
     try:
-        res = supabase_client.table("LayoutConfig").select("id").limit(1).execute()
+        res = supabase.table("LayoutConfig").select("id").limit(1).execute()
         if res.data:
-            supabase_client.table("LayoutConfig").update({"config": cfg}).eq("id", res.data[0]["id"]).execute()
+            supabase.table("LayoutConfig").update({"config": cfg}).eq("id", res.data[0]["id"]).execute()
         else:
-            supabase_client.table("LayoutConfig").insert({"config": cfg}).execute()
+            supabase.table("LayoutConfig").insert({"config": cfg}).execute()
         logger.info("Supabase Config Synced")
     except Exception as e:
         logger.error(f"Supabase Config Sync Failed: {e}")

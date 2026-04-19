@@ -1,14 +1,12 @@
 import { useState, useEffect } from 'react'
 import AdminDesign from './components/admin/AdminDesign'
 import ParticipantClaim from './components/participant/ParticipantClaim'
-import Verification from './components/verification/Verification'
 import ErrorBoundary from './components/common/ErrorBoundary'
 import { Toaster } from 'sonner'
 
 function App() {
   // Simple router for prototype
-  const [view, setView] = useState('participant') // 'admin', 'participant', 'verify'
-  const [serial, setSerial] = useState(null) // For verification view
+  const [view, setView] = useState('participant') // 'admin', 'participant'
 
   // Basic URL routing simulation
   const [path, setPath] = useState(window.location.pathname)
@@ -24,24 +22,17 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if ((path.startsWith('/verify/') || (path === '/verify' && queryId))) {
-      const s = queryId || path.split('/verify/')[1]
-      if (s) {
-        setSerial(s)
-        setView('verify')
-      }
-    } else if (path === '/admin') {
+    if (path === '/admin') {
       setView('admin')
     } else {
       setView('participant')
     }
-  }, [path, queryId])
+  }, [path])
 
   const navigate = (newView, newPath = '/') => {
     window.history.pushState({}, '', newPath)
     setPath(newPath)
     setView(newView)
-    if (newView !== 'verify') setSerial(null)
   }
 
   return (
@@ -63,17 +54,17 @@ function App() {
       <ErrorBoundary>
         <div className="min-h-screen bg-bg text-primary font-sans selection:bg-accent/30 overflow-x-hidden">
         {/* Navbar */}
-        <nav className="fixed top-0 w-full z-50 px-8 py-6 flex justify-between items-center bg-bg/40 backdrop-blur-xl border-b border-white/5">
-          <div className="flex items-center gap-4 cursor-pointer group" onClick={() => navigate('participant')}>
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-accent/50 flex items-center justify-center shadow-lg shadow-accent/20">
-              <span className="text-lg font-bold text-white">CG</span>
+        <nav className="fixed top-0 w-full z-50 px-6 md:px-12 py-5 MD:py-6 flex justify-between items-center bg-bg/40 backdrop-blur-xl border-b border-white/5">
+          <div className="flex items-center gap-3 md:gap-4 cursor-pointer group" onClick={() => navigate('participant')}>
+            <div className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-white/5 flex items-center justify-center shadow-lg overflow-hidden">
+              <img src="/logo.png" alt="CertGen" className="w-7 h-7 md:w-8 md:h-8 object-contain" />
             </div>
             <div className="flex flex-col">
-              <span className="font-semibold text-lg tracking-tight leading-none text-white">CertGen</span>
-              <span className="text-[10px] font-medium text-primary-dim mt-1">Dashboard</span>
+              <span className="font-semibold text-base md:text-lg tracking-tight leading-none text-white">CertGen</span>
+              <span className="text-[9px] md:text-[10px] font-medium text-primary-dim mt-1">Dashboard</span>
             </div>
           </div>
-          <div className="flex items-center gap-8">
+          <div className="flex items-center gap-6 md:gap-8">
             <button 
                 onClick={() => navigate('participant')} 
                 className={`text-sm font-medium transition-all ${view === 'participant' ? 'text-white' : 'text-primary-dim hover:text-white'}`}
@@ -107,17 +98,17 @@ function App() {
           {view === 'participant' && (
             <div className="flex flex-col lg:flex-row items-stretch justify-center flex-1 animate-in fade-in slide-in-from-bottom-4 duration-1000">
               {/* Hero Section */}
-              <div className="flex-1 p-12 lg:p-24 flex flex-col justify-center space-y-10">
-                <div className="space-y-8">
-                   <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-white/10 bg-white/5 text-[11px] font-medium text-primary-dim uppercase tracking-wider backdrop-blur-sm">
+              <div className="flex-1 p-8 md:p-12 lg:p-24 flex flex-col justify-center space-y-8 md:space-y-10">
+                <div className="space-y-6 md:space-y-8">
+                   <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-white/10 bg-white/5 text-[10px] md:text-[11px] font-medium text-primary-dim uppercase tracking-wider backdrop-blur-sm">
                       <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
                       System Online
                    </div>
-                   <h1 className="text-6xl md:text-8xl font-bold tracking-tight text-white leading-[1.0]">
-                      Generate Your <br />
+                   <h1 className="text-4xl sm:text-5xl md:text-7xl lg:text-8xl font-black tracking-tighter text-white leading-[1.0] md:leading-[0.95]">
+                      Generate Your <br className="hidden md:block" />
                       <span className="text-gradient">Certificates</span>
                    </h1>
-                   <p className="text-primary-dim text-lg md:text-xl max-w-lg font-medium leading-relaxed">
+                   <p className="text-primary-dim text-base md:text-lg lg:text-xl max-w-lg font-medium leading-relaxed">
                       Issue, manage, and verify digital credentials with institutional-grade security.
                    </p>
                 </div>
@@ -131,11 +122,7 @@ function App() {
             </div>
           )}
 
-          {view === 'verify' && (
-            <div className="flex-1 flex items-center justify-center p-8 bg-grid">
-               <Verification serial={serial} />
-            </div>
-          )}
+
         </main>
       </div>
       </ErrorBoundary>

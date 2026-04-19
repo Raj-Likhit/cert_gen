@@ -1,0 +1,9 @@
+Traceback (most recent call last):
+  File "C:\Users\rajli\Cert-Gen-prototype\backend\debug_app.py", line 9, in <module>
+    from app.main import app
+  File "C:\Users\rajli\Cert-Gen-prototype\backend\app\main.py", line 8, in <module>
+    from .api.endpoints import router
+  File "C:\Users\rajli\Cert-Gen-prototype\backend\app\api\endpoints.py", line 108, in <module>
+    class GoogleFontRequest(BaseModel):
+                            ^^^^^^^^^
+NameError: name 'BaseModel' is not defined

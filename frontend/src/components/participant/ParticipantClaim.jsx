@@ -6,37 +6,51 @@ import {
     IconLayout as Loader2, 
     IconCheck as CheckCircle2, 
     IconAlert as AlertCircle,
-    IconSave as Download,
-    IconUsers as LinkedIn
+    IconSave as Download
 } from '../common/Icons'
 import confetti from 'canvas-confetti'
 import { toast } from 'sonner'
 
+const CLAIM_STATES = {
+    IDLE: 'IDLE',
+    SEARCHING: 'SEARCHING',
+    GENERATING: 'GENERATING',
+    SUCCESS: 'SUCCESS',
+    ERROR: 'ERROR'
+}
+
 export default function ParticipantClaim() {
     const [email, setEmail] = useState('')
-    const [loading, setLoading] = useState(false)
+    const [status, setStatus] = useState(CLAIM_STATES.IDLE)
     const [error, setError] = useState(null)
     const [cert, setCert] = useState(null)
+
+    const loading = status === CLAIM_STATES.SEARCHING || status === CLAIM_STATES.GENERATING
 
     const handleClaim = async (e) => {
         e.preventDefault()
         if (!email) return
 
-        setLoading(true)
+        setStatus(CLAIM_STATES.SEARCHING)
         setError(null)
         setCert(null)
 
         try {
-            // Updated Endpoint: /claim
+            const cleanEmail = email.trim().toLowerCase()
+            
             const res = await api.post('/claim', {
-                email: email.trim(),
+                email: cleanEmail,
                 frontend_url: window.location.origin
             })
 
-            // Faux delay for suspense
-            if (Date.now() % 2 === 0) await new Promise(r => setTimeout(r, 800))
+            setStatus(CLAIM_STATES.GENERATING)
+            
+            // Artificial delay to prevent UI flickering on very fast responses
+            // and to give the impression of the render engine working
+            await new Promise(r => setTimeout(r, 1200))
 
             setCert(res.data)
+            setStatus(CLAIM_STATES.SUCCESS)
             if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
                 confetti({
                     particleCount: 150,
@@ -46,6 +60,7 @@ export default function ParticipantClaim() {
                 })
             }
         } catch (err) {
+            setStatus(CLAIM_STATES.ERROR)
             console.error("Claim Error Details:", err)
             if (err.response?.status === 404) {
                 toast.error("Email not found", {
@@ -80,11 +95,6 @@ export default function ParticipantClaim() {
         }
     }
 
-    const handleLinkedInShare = () => {
-        if (!cert) return
-        const linkedInUrl = `https://www.linkedin.com/profile/add?startTask=CERTIFICATION_NAME&name=${encodeURIComponent("Certificate of Participation")}&organizationName=${encodeURIComponent("CertGen")}&issueYear=${new Date().getFullYear()}&issueMonth=${new Date().getMonth() + 1}&certUrl=${encodeURIComponent(cert.cert_url)}&certId=${encodeURIComponent(cert.serial_number)}`;
-        window.open(linkedInUrl, '_blank');
-    }
 
     return (
         <div className="relative min-h-[600px] w-full max-w-xl mx-auto flex items-center justify-center p-4">
@@ -100,8 +110,8 @@ export default function ParticipantClaim() {
                     {/* Header */}
                     <div className="p-12 text-center relative border-b border-white/5">
                         <div className="flex justify-center mb-8">
-                            <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-accent to-accent/20 flex items-center justify-center shadow-lg shadow-accent/20 transform -rotate-3 hover:rotate-0 transition-transform duration-500">
-                                <Search className="w-10 h-10 text-white" />
+                            <div className="w-20 h-20 rounded-2xl bg-white/5 flex items-center justify-center shadow-lg transform -rotate-3 hover:rotate-0 transition-transform duration-500 overflow-hidden">
+                                <img src="/logo.png" alt="CertGen Logo" className="w-16 h-16 object-contain" />
                             </div>
                         </div>
 
@@ -129,15 +139,18 @@ export default function ParticipantClaim() {
                                     </div>
 
                                     <button
-                                        disabled={loading}
-                                        className="w-full h-14 bg-white text-black hover:bg-white/90 disabled:opacity-50 transition-all font-bold tracking-tight rounded-xl flex items-center justify-center shadow-xl shadow-white/5"
-                                    >
-                                        {loading ? (
-                                            <Loader2 className="w-6 h-6 animate-spin" />
-                                        ) : (
-                                            "Search Registry"
-                                        )}
-                                    </button>
+                                    type="submit"
+                                    disabled={loading || !email}
+                                    className="w-full h-16 rounded-2xl bg-white text-black font-bold text-lg tracking-tight hover:bg-white/90 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-xl shadow-white/5 flex items-center justify-center gap-3 active:scale-[0.98]"
+                                >
+                                    {status === CLAIM_STATES.SEARCHING ? (
+                                        <><Loader2 className="w-6 h-6 animate-spin" /> Searching Record...</>
+                                    ) : status === CLAIM_STATES.GENERATING ? (
+                                        <><Loader2 className="w-6 h-6 animate-spin text-accent" /> Rendering Certificate...</>
+                                    ) : (
+                                        <>Get My Certificate</>
+                                    )}
+                                </button>
                                 </form>
                             </div>
                         ) : (
@@ -150,57 +163,23 @@ export default function ParticipantClaim() {
                                     <div className="w-14 h-14 rounded-xl bg-success/20 flex items-center justify-center shrink-0">
                                         <CheckCircle2 className="w-7 h-7 text-success" />
                                     </div>
-                                    <div className="min-w-0">
-                                        <h3 className="text-sm font-semibold text-white">Verification Successful</h3>
+                                    <div className="min-w-0 text-center flex-1">
+                                        <h3 className="text-sm font-semibold text-white">Certificate Ready</h3>
                                         <p className="text-sm font-medium text-primary-dim mt-0.5 truncate">{cert.name}</p>
                                     </div>
+
                                 </div>
 
-                                {/* PNG Preview */}
-                                <div
-                                    onClick={() => cert.cert_png_url && window.open(cert.cert_png_url, '_blank')}
-                                    className="group/preview cursor-pointer block border border-white/5 bg-black/40 relative overflow-hidden transition-all hover:border-accent rounded-2xl"
-                                >
-                                    {cert.cert_png_url ? (
-                                        <>
-                                            <img
-                                                src={cert.cert_png_url}
-                                                alt="Certificate"
-                                                className="w-full h-auto transition duration-500 group-hover/preview:scale-105"
-                                            />
-                                            <div className="absolute inset-0 bg-black/60 opacity-0 group-hover/preview:opacity-100 transition-opacity flex flex-col items-center justify-center gap-3 backdrop-blur-sm">
-                                                <div className="w-14 h-14 rounded-full bg-white/10 flex items-center justify-center text-white scale-90 group-hover/preview:scale-100 transition-transform">
-                                                    <Search className="w-6 h-6" />
-                                                </div>
-                                                <span className="text-sm font-bold text-white tracking-tight">View Full Size</span>
-                                            </div>
-                                        </>
-                                    ) : (
-                                        <div className="flex items-center justify-center aspect-video font-medium text-sm text-primary-dim">Asset Sync Pending</div>
-                                    )}
-                                </div>
+
 
                                 <div className="grid grid-cols-1 gap-4">
-                                     <div className="grid grid-cols-2 gap-4">
-                                        <button
-                                            onClick={() => handleDownload(cert.cert_url, `Cert-${cert.serial_number}.pdf`)}
-                                            className="h-12 rounded-xl border border-white/5 bg-white/5 text-sm font-semibold hover:bg-white/10 transition-colors flex items-center justify-center gap-2"
-                                        >
-                                            <Download className="w-4 h-4" /> PDF
-                                        </button>
-                                        <button
-                                            onClick={() => handleDownload(cert.cert_png_url, `Cert-${cert.serial_number}.png`)}
-                                            className="h-12 rounded-xl border border-white/5 bg-white/5 text-sm font-semibold hover:bg-white/10 transition-colors flex items-center justify-center gap-2"
-                                        >
-                                            <Download className="w-4 h-4" /> IMAGE
-                                        </button>
-                                     </div>
                                     <button
-                                        onClick={handleLinkedInShare}
-                                        className="h-14 rounded-xl bg-accent text-white font-bold text-sm tracking-tight shadow-xl shadow-accent/20 hover:opacity-90 transition-opacity flex items-center justify-center gap-2"
+                                        onClick={() => handleDownload(cert.cert_url, `Certificate.pdf`)}
+                                        className="h-16 rounded-2xl bg-white text-black font-bold text-lg tracking-tight shadow-xl shadow-white/5 hover:bg-white/90 transition-all flex items-center justify-center gap-3"
                                     >
-                                        <LinkedIn className="w-5 h-5" /> Add to LinkedIn Profile
+                                        <Download className="w-6 h-6" /> Download PDF Certificate
                                     </button>
+
                                 </div>
                             </motion.div>
                         )}

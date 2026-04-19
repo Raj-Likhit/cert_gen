@@ -1,6 +1,6 @@
 # 🎓 CertGen: Enterprise Certificate Ecosystem
 
-A premium, high-performance platform for generating and verifying certificates with immutable SHA-256 fingerprinting.
+A premium, high-performance platform for generating and managing digital certificates with pixel-perfect precision.
 
 ---
 
@@ -17,10 +17,7 @@ CREATE TABLE public."Participants" (
     email text UNIQUE,
     is_claimed boolean DEFAULT false,
     claimed_at timestamp without time zone,
-    cert_url text,
-    serial_number text,
-    cert_png_url text,
-    cert_hash text
+    cert_url text
 );
 
 -- Enable RLS
@@ -96,10 +93,9 @@ FONTS_DIR=assets/fonts
 
 ## 💎 Features
 - **Obsidian Premium AI Aesthetic**: A sleek, dark-themed management interface.
-- **SHA-256 Verification**: Every certificate is uniquely hashed for 100% tamper-proof security.
 - **Pixel-Perfect Positioning**: Unified middle-alignment engine ensuring design consistency between editor and output (PNG/PDF).
 - **Real-time Analytics**: ROI tracking for claimed vs unclaimed certificates.
-- **Design Editor**: Interactive canvas for sub-pixel precise placement of participant names and QR codes.
+- **Design Editor**: Interactive canvas for sub-pixel precise placement of participant names.
 
 ---
 **Maintained by**: Raj Likhit

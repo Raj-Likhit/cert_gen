@@ -2,6 +2,7 @@ import io
 import os
 import datetime
 import jwt
+from pydantic import BaseModel
 from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, Request
 from fastapi.responses import StreamingResponse
 from supabase import create_client, Client
@@ -9,11 +10,11 @@ from PIL import Image
 from ..core import config
 from ..models import schemas
 from ..services import certificate_service as service
+from ..core.limiter import limiter
+from ..core.logging_config import logger
+from ..core.supabase_client import supabase
 
 router = APIRouter()
-
-# Supabase Client
-supabase: Client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
 
 # JWT Security
 def verify_jwt(request: Request):
@@ -49,14 +50,13 @@ def admin_login(req: schemas.LoginRequest):
 
 @router.get("/admin/config")
 def get_layout_config():
-    return service.load_config()
+    return {"config": service.load_config()}
 
 @router.post("/admin/save-config", dependencies=[Depends(verify_jwt)])
 async def save_layout_config(req: schemas.ConfigRequest):
     try:
         cfg = service.load_config()
         cfg['name_pos'] = {'x': req.name_x, 'y': req.name_y}
-        cfg['qr_pos'] = {'x': req.qr_x, 'y': req.qr_y, 'size': req.qr_size}
         cfg['font_family'] = req.font_family
         cfg['text_color'] = req.text_color
         cfg['event_name'] = req.event_name
@@ -66,6 +66,8 @@ async def save_layout_config(req: schemas.ConfigRequest):
         cfg['stroke_width'] = req.stroke_width
         cfg['stroke_color'] = req.stroke_color
         cfg['font_size'] = req.font_size
+        cfg['font_url'] = req.font_url
+        cfg['font_filename'] = req.font_filename
         service.save_config(cfg)
         return {"status": "saved", "config": cfg}
     except Exception as e:
@@ -81,48 +83,103 @@ def auto_detect_layout():
             return {"found": True, "x": coords[0], "y": coords[1]}
         return {"found": False, "message": "No horizontal line detected."}
 
-@router.post("/admin/preview-render", dependencies=[Depends(verify_jwt)])
-async def preview_certificate(req: schemas.ConfigRequest, name: str = "John Doe"):
-    if not os.path.exists(config.TEMPLATE_PATH):
-        raise HTTPException(status_code=404, detail="Template not found.")
-    with open(config.TEMPLATE_PATH, "rb") as f:
-        template_bytes = f.read()
-    cfg = {
-        'name_pos': {'x': req.name_x, 'y': req.name_y},
-        'qr_pos': {'x': req.qr_x, 'y': req.qr_y, 'size': req.qr_size},
-        'font_family': req.font_family,
-        'text_color': req.text_color,
-        'is_centered': req.is_centered,
-        'font_weight': req.font_weight,
-        'is_italic': req.is_italic,
-        'stroke_width': req.stroke_width,
-        'stroke_color': req.stroke_color,
-        'font_size': req.font_size
-    }
-    png_buffer = service.generate_certificate_png(io.BytesIO(template_bytes), name, "PREVIEW-ONLY", cfg)
-    return StreamingResponse(io.BytesIO(png_buffer.getvalue()), media_type="image/png")
 
 @router.post("/admin/upload-template")
 async def upload_template(request: Request, file: UploadFile = File(...)):
     verify_jwt(request)
-    if not os.path.exists("assets"):
-        os.makedirs("assets")
-    with open(config.TEMPLATE_PATH, "wb") as f:
+    try:
+        if not file.filename.lower().endswith((".png", ".jpg", ".jpeg")):
+            raise HTTPException(status_code=400, detail="Invalid file type. Only PNG and JPG are allowed.")
+        
         content = await file.read()
-        f.write(content)
-    return {"status": "success", "filename": "template.png"}
+        
+        # 1. Sync to Supabase Storage (Stateless Priority)
+        try:
+            supabase.storage.from_("assets").upload(
+                "template.png", 
+                content, 
+                {"content-type": "image/png", "upsert": "true"}
+            )
+        except Exception as se:
+            logger.error(f"Supabase Template Sync Failed: {se}")
+            # If we aren't in serverless, we can still rely on local, 
+            # but usually Supabase is our source of truth now.
+
+        # 2. Sync to Local (For legacy/dev support, optional in serverless)
+        try:
+            if not os.path.exists("assets"): os.makedirs("assets")
+            with open(config.TEMPLATE_PATH, "wb") as f:
+                f.write(content)
+        except Exception as le:
+            logger.warning(f"Local template write skipped/failed (normal in serverless): {le}")
+
+        # Clear Cache
+        import app.services.certificate_service as service
+        service.CACHE_TEMPLATE = content
+
+        return {"status": "success", "filename": "template.png"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/admin/upload-font")
 async def upload_font(request: Request, file: UploadFile = File(...)):
     verify_jwt(request)
-    if not os.path.exists(config.FONTS_DIR):
-        os.makedirs(config.FONTS_DIR)
-    file_path = os.path.join(config.FONTS_DIR, file.filename)
-    with open(file_path, "wb") as f:
+    try:
+        if not file.filename.lower().endswith((".ttf", ".otf")):
+            raise HTTPException(status_code=400, detail="Invalid file type. Only .ttf and .otf are allowed.")
+        
         content = await file.read()
-        f.write(content)
-    service.register_custom_fonts()
-    return {"status": "success", "filename": file.filename}
+        
+        # 1. Sync to Local (Best effort for immediate registration)
+        try:
+            if not os.path.exists(config.FONTS_DIR):
+                os.makedirs(config.FONTS_DIR)
+            file_path = os.path.join(config.FONTS_DIR, file.filename)
+            with open(file_path, "wb") as f:
+                f.write(content)
+        except Exception as le:
+            logger.warning(f"Local font write skipped/failed: {le}")
+
+        # 2. Sync to Supabase Storage (Stateless Priority)
+        service.sync_font_to_storage(file.filename, content)
+        
+        # 3. Register
+        service.register_custom_fonts()
+        
+        return {"status": "success", "filename": file.filename}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/admin/fonts/{filename}", dependencies=[Depends(verify_jwt)])
+def delete_font(filename: str):
+    try:
+        if filename.endswith(".ttf") or filename.endswith(".otf"):
+            file_path = os.path.join(config.FONTS_DIR, filename)
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            font_name = os.path.splitext(filename)[0]
+            service.REGISTERED_FONTS = [f for f in service.REGISTERED_FONTS if f.get('name') != font_name]
+            try:
+                supabase.storage.from_("fonts").remove([filename])
+            except:
+                pass
+            return {"status": "deleted"}
+        raise HTTPException(status_code=400, detail="Invalid font filename")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class GoogleFontRequest(BaseModel):
+    url: str
+
+@router.post("/admin/font-import-google", dependencies=[Depends(verify_jwt)])
+async def import_google_font(req: GoogleFontRequest):
+    try:
+        fonts = service.import_google_font(req.url)
+        if not fonts:
+            raise ValueError("Success connection but no compatible .ttf font variants found in this URL. Try a different Google Font link.")
+        return {"status": "success", "imported": fonts}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/admin/fonts")
 def get_fonts():
@@ -143,36 +200,16 @@ def delete_template():
 def check_health():
     return {"status": "healthy", "timestamp": datetime.datetime.now().isoformat()}
 
-@router.get("/verify/{serial}")
-def verify_certificate(serial: str):
-    res = supabase.table("Participants").select("*").eq("serial_number", serial).execute()
-    if not res.data:
-        raise HTTPException(status_code=404, detail="Certificate not found")
-    participant = res.data[0]
-    cfg = service.load_config()
-    participant['event_name'] = cfg.get('event_name', 'Certificate of Participation')
-    return participant
-
-@router.post("/claim")
-async def claim_certificate(req: schemas.ClaimRequest):
-    result, error = await service.process_claim(req.email, req.frontend_url, supabase)
-    if error:
-        if error == "No participant found":
-            raise HTTPException(status_code=404, detail=error)
-        if error == "Template not configured":
-            raise HTTPException(status_code=404, detail=error)
-        raise HTTPException(status_code=500, detail=error)
-    return result
-
-@router.post("/admin/batch-import", dependencies=[Depends(verify_jwt)])
-async def batch_import_participants(req: schemas.BatchImportRequest):
-    results = await service.process_batch_import(req.participants, supabase)
-    return {
-        "summary": f"Processed {len(results)} records", 
-        "details": results,
-        "success_count": len([r for r in results if r['status'] == 'success']),
-        "error_count": len([r for r in results if r['status'] == 'error'])
-    }
+# Helper to sanitize database exceptions
+def handle_db_error(e: Exception):
+    err_str = str(e)
+    # Check for Supabase restoration markers (Cloudflare 521, getaddrinfo, etc)
+    if "521" in err_str or "getaddrinfo" in err_str or "connection" in err_str.lower():
+        return HTTPException(
+            status_code=503, 
+            detail="Database is currently waking up or unreachable. Please wait a minute and refresh."
+        )
+    return HTTPException(status_code=500, detail=f"Database error: {err_str[:200]}")
 
 @router.get("/admin/participants", dependencies=[Depends(verify_jwt)])
 async def get_participants():
@@ -180,4 +217,37 @@ async def get_participants():
         res = supabase.table("Participants").select("*").execute()
         return res.data
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise handle_db_error(e)
+
+
+@router.post("/claim")
+@limiter.limit("20/minute")
+async def claim_certificate(req: schemas.ClaimRequest, request: Request):
+    try:
+        result, error = await service.process_claim(req.email, req.frontend_url, supabase)
+        if error:
+            if error == "No participant found":
+                raise HTTPException(status_code=404, detail=error)
+            if error == "Template not configured":
+                raise HTTPException(status_code=404, detail=error)
+            # Check if service.process_claim error string looks like a DB connection issue
+            if "521" in error or "connection" in error.lower():
+                 raise HTTPException(status_code=503, detail="Database is waking up, please try again.")
+            raise HTTPException(status_code=500, detail=error)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise handle_db_error(e)
+@router.post("/admin/batch-import", dependencies=[Depends(verify_jwt)])
+async def batch_import_participants(req: schemas.BatchImportRequest):
+    try:
+        results = await service.process_batch_import(req.participants, supabase)
+        return {
+            "summary": f"Processed {len(results)} records", 
+            "details": results,
+            "success_count": len([r for r in results if r['status'] == 'success']),
+            "error_count": len([r for r in results if r['status'] == 'error'])
+        }
+    except Exception as e:
+        raise handle_db_error(e)

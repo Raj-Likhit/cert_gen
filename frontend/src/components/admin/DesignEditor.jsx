@@ -23,8 +23,6 @@ export default function DesignEditor({
     onDelete,
     namePos,
     setNamePos,
-    verifyPos,
-    setVerifyPos,
     setQrSize, // keep as no-op to avoid breaking interface if not all files updated at once
     onSave,
     onAutoDetect,
@@ -67,33 +65,24 @@ export default function DesignEditor({
         img.src = templateUrl;
     }, [templateUrl]);
 
-    // Dynamic Font Injection (Google & Custom Uploads)
+    // Modern Font Synchronization (FontFace API compatible)
     useEffect(() => {
-        // Clean up previous dynamic font styles
-        const existingStyle = document.getElementById('dynamic-font-style');
-        if (existingStyle) existingStyle.remove();
-        const existingLink = document.getElementById('dynamic-font-link');
-        if (existingLink) existingLink.remove();
+        const syncFont = async () => {
+            if (!document.fonts) return;
+            
+            // If it's a custom font or Google font, ensure it's "hot" in the document
+            const familyToLoad = fontFamily.includes('-') ? fontFamily.split('-')[0] : fontFamily;
+            try {
+                await document.fonts.load(`${fontSize}px ${familyToLoad}`);
+                await document.fonts.ready;
+                // Once ready, the browser will automatically reflow the SVG text
+            } catch (e) {
+                console.warn("Font sync failed:", e);
+            }
+        };
 
-        if (fontUrl && fontUrl.startsWith('https://fonts.googleapis.com')) {
-            const link = document.createElement('link');
-            link.id = 'dynamic-font-link';
-            link.rel = 'stylesheet';
-            link.href = fontUrl;
-            document.head.appendChild(link);
-        } else if (fontFilename) {
-            const fontName = fontFilename.split('.')[0];
-            const style = document.createElement('style');
-            style.id = 'dynamic-font-style';
-            style.appendChild(document.createTextNode(`
-                @font-face {
-                    font-family: '${fontName}';
-                    src: url('http://localhost:8000/assets/fonts/${fontFilename}') format('truetype');
-                }
-            `));
-            document.head.appendChild(style);
-        }
-    }, [fontUrl, fontFilename]);
+        syncFont();
+    }, [fontFamily, fontSize, fontUrl, fontFilename]);
 
     // Handle Zoom/Scaling
     useEffect(() => {
@@ -124,7 +113,7 @@ export default function DesignEditor({
         e.stopPropagation();
         setSelectedId(id);
         const { x, y } = getSvgCoords(e);
-        const pos = id === 'name' ? namePos : verifyPos;
+        const pos = namePos;
         setDraggingId(id);
         setDragOffset({ x: x - pos.x, y: y - pos.y });
         svgRef.current.setPointerCapture(e.pointerId);
@@ -143,12 +132,6 @@ export default function DesignEditor({
                 if (isCentered) newX = centerX;
             }
             setNamePos({ x: Math.round(newX), y: Math.round(newY) });
-        } else if (draggingId === 'verify') {
-            const centerX = imgSize.width / 2;
-            if (Math.abs(newX - (isCentered ? centerX : centerX - 200)) < (20 / scale)) {
-                if (isCentered) newX = centerX;
-            }
-            setVerifyPos({ x: Math.round(newX), y: Math.round(newY) });
         }
     };
 
@@ -160,93 +143,18 @@ export default function DesignEditor({
     return (
         <div className="h-full flex flex-col lg:flex-row gap-0 select-none bg-bg text-primary font-sans">
             {/* SIDEBAR */}
-            <div className="w-full lg:w-96 shrink-0 flex flex-col gap-0 h-full overflow-y-auto border-r border-white/5 bg-surface/20 backdrop-blur-3xl custom-scrollbar">
+            <div className="w-full lg:w-96 bg-surface/50 backdrop-blur-3xl border-r border-white/5 flex flex-col overflow-hidden shrink-0">
+            <div className="p-6 md:p-8 border-b border-white/5 bg-white/[0.02]">
+                <h2 className="text-2xl md:text-3xl font-black tracking-tighter text-white">Editor</h2>
+                <p className="text-[10px] uppercase tracking-[0.4em] text-primary-dim font-bold mt-2">Vector Manipulation Engine</p>
+            </div>
+            <div className="flex-1 overflow-y-auto custom-scrollbar p-6 md:p-8 space-y-10 md:space-y-12">
                 
-                {/* Actions & Stats */}
-                <div className="p-8 border-b border-white/5 space-y-8 bg-white/5">
-                    <div className="flex items-center justify-between">
-                        <label className="text-[10px] font-bold uppercase tracking-[0.25em] text-primary-dim flex items-center gap-2">
-                             <Ruler className="w-3 h-3" /> Positioning
-                        </label>
-                        <div className="flex gap-2">
-                            <span className="text-[9px] font-mono text-white/40 border border-white/10 px-2 py-1 bg-black/40 leading-none uppercase tracking-widest">{imgSize.width}×{imgSize.height} PX</span>
-                        </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                            <label className="text-[9px] font-bold text-primary-dim uppercase ml-1 tracking-widest">Name X Position</label>
-                            <input type="number" value={namePos.x} onChange={e => setNamePos(prev => ({ ...prev, x: parseInt(e.target.value) || 0 }))} className="w-full h-12 rounded-xl bg-white/5 border border-white/5 px-4 text-accent font-mono focus:border-accent/50 outline-none transition-all" />
-                        </div>
-                        <div className="space-y-2">
-                            <label className="text-[9px] font-bold text-primary-dim uppercase ml-1 tracking-widest">Name Y Position</label>
-                            <input type="number" value={namePos.y} onChange={e => setNamePos(prev => ({ ...prev, y: parseInt(e.target.value) || 0 }))} className="w-full h-12 rounded-xl bg-white/5 border border-white/5 px-4 text-accent font-mono focus:border-accent/50 outline-none transition-all" />
-                        </div>
-                        <div className="space-y-2">
-                            <label className="text-[9px] font-bold text-primary-dim uppercase ml-1 tracking-widest">Verify X Position</label>
-                            <input type="number" value={verifyPos.x} onChange={e => setVerifyPos(prev => ({ ...prev, x: parseInt(e.target.value) || 0 }))} className="w-full h-12 rounded-xl bg-white/5 border border-white/5 px-4 text-white/60 font-mono focus:border-white/50 outline-none transition-all" />
-                        </div>
-                        <div className="space-y-2">
-                            <label className="text-[9px] font-bold text-primary-dim uppercase ml-1 tracking-widest">Verify Y Position</label>
-                            <input type="number" value={verifyPos.y} onChange={e => setVerifyPos(prev => ({ ...prev, y: parseInt(e.target.value) || 0 }))} className="w-full h-12 rounded-xl bg-white/5 border border-white/5 px-4 text-white/60 font-mono focus:border-white/50 outline-none transition-all" />
-                        </div>
-                    </div>
-
-                    <div className="flex flex-col gap-3">
-                         <button 
-                            onClick={onSave} 
-                            className="w-full h-14 rounded-xl bg-white text-black hover:bg-white/90 font-bold tracking-tight shadow-xl shadow-white/5 flex items-center justify-center gap-3 transition-all"
-                        >
-                            <Save className="w-4 h-4" /> Save Changes
-                        </button>
-                        <div className="grid grid-cols-2 gap-3">
-                             <button 
-                                onClick={() => {
-                                    setNamePos({ 
-                                        x: Math.round(imgSize.width / 2), 
-                                        y: Math.round(imgSize.height / 2) 
-                                    });
-                                    setIsCentered(true);
-                                }} 
-                                title="Center name on canvas"
-                                className="h-12 rounded-xl bg-white/5 border border-white/5 text-primary-dim hover:text-white hover:bg-white/10 flex items-center justify-center gap-2 transition-all"
-                            >
-                                <Maximize className="w-3 h-3" /> Center Name
-                            </button>
-                             <button 
-                                onClick={() => {
-                                    setVerifyPos({ 
-                                        x: Math.round(imgSize.width / 2), 
-                                        y: verifyPos.y 
-                                    });
-                                    setIsCentered(true);
-                                }} 
-                                title="Center verification URL horizontally"
-                                className="h-12 rounded-xl bg-white/5 border border-white/5 text-primary-dim hover:text-white hover:bg-white/10 flex items-center justify-center gap-2 transition-all"
-                            >
-                                <Maximize className="w-3 h-3" /> Center Verify
-                            </button>
-                        </div>
-                        <button 
-                            onClick={onAutoDetect} 
-                            className="w-full h-12 rounded-xl bg-accent text-white font-bold text-xs hover:opacity-90 flex items-center justify-center gap-2 transition-all shadow-lg shadow-accent/10"
-                        >
-                            <MousePointer2 className="w-3 h-3" /> Auto-Detect Name Line
-                        </button>
-                    </div>
-                </div>
-
-                {/* Template Section */}
-                <div className="p-8 border-b border-white/5 space-y-6">
-                    <div className="flex items-center justify-between">
-                        <label className="text-[10px] font-bold uppercase tracking-[0.25em] text-primary-dim flex items-center gap-2">
-                            <Upload className="w-3 h-3" /> Template
-                        </label>
-                        {templateUrl && (
-                            <button onClick={onDelete} className="text-white/40 hover:text-error transition group">
-                                <Trash2 className="w-4 h-4 transition-transform group-active:scale-90" />
-                            </button>
-                        )}
+                {/* 1. Template Upload */}
+                <div className="space-y-6">
+                    <div className="flex items-center gap-3">
+                        <div className="w-1.5 h-6 bg-accent" />
+                        <h3 className="text-lg md:text-xl font-bold tracking-tight text-white italic">01. Blueprint</h3>
                     </div>
                     
                     {!templateUrl ? (
@@ -270,8 +178,61 @@ export default function DesignEditor({
                     )}
                 </div>
 
+                {/* Actions & Stats */}
+                <div className="space-y-8">
+                    <div className="flex items-center justify-between">
+                        <label className="text-[10px] font-bold uppercase tracking-[0.25em] text-primary-dim flex items-center gap-2">
+                             <Ruler className="w-3 h-3" /> Positioning
+                        </label>
+                        <div className="flex gap-2">
+                            <span className="text-[9px] font-mono text-white/40 border border-white/10 px-2 py-1 bg-black/40 leading-none uppercase tracking-widest">{imgSize.width}×{imgSize.height} PX</span>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                            <label className="text-[9px] font-bold text-primary-dim uppercase ml-1 tracking-widest">Name X Position</label>
+                            <input type="number" value={namePos.x} onChange={e => setNamePos(prev => ({ ...prev, x: parseInt(e.target.value) || 0 }))} className="w-full h-12 rounded-xl bg-white/5 border border-white/5 px-4 text-accent font-mono focus:border-accent/50 outline-none transition-all" />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-[9px] font-bold text-primary-dim uppercase ml-1 tracking-widest">Name Y Position</label>
+                            <input type="number" value={namePos.y} onChange={e => setNamePos(prev => ({ ...prev, y: parseInt(e.target.value) || 0 }))} className="w-full h-12 rounded-xl bg-white/5 border border-white/5 px-4 text-accent font-mono focus:border-accent/50 outline-none transition-all" />
+                        </div>
+                    </div>
+
+                    <div className="flex flex-col gap-3">
+                         <button 
+                            onClick={onSave} 
+                            className="w-full h-14 rounded-xl bg-white text-black hover:bg-white/90 font-bold tracking-tight shadow-xl shadow-white/5 flex items-center justify-center gap-3 transition-all"
+                        >
+                            <Save className="w-4 h-4" /> Save Changes
+                        </button>
+                        <div className="flex flex-col gap-3">
+                             <button 
+                                onClick={() => {
+                                    setNamePos({ 
+                                        x: Math.round(imgSize.width / 2), 
+                                        y: Math.round(imgSize.height / 2) 
+                                    });
+                                    setIsCentered(true);
+                                }} 
+                                title="Center name on canvas"
+                                className="h-12 w-full rounded-xl bg-white/5 border border-white/5 text-primary-dim hover:text-white hover:bg-white/10 flex items-center justify-center gap-2 transition-all"
+                            >
+                                <Maximize className="w-3 h-3" /> Center Name
+                            </button>
+                        </div>
+                        <button 
+                            onClick={onAutoDetect} 
+                            className="w-full h-12 rounded-xl bg-accent text-white font-bold text-xs hover:opacity-90 flex items-center justify-center gap-2 transition-all shadow-lg shadow-accent/10"
+                        >
+                            <MousePointer2 className="w-3 h-3" /> Auto-Detect Name Line
+                        </button>
+                    </div>
+                </div>
+
                 {/* Name Styling */}
-                <div className="p-8 border-b border-white/5 space-y-6">
+                <div className="space-y-6">
                     <label className="text-[10px] font-bold uppercase tracking-[0.25em] text-primary-dim flex items-center gap-2">
                         <IconType className="w-3 h-3" /> Text Style
                     </label>
@@ -304,8 +265,6 @@ export default function DesignEditor({
                                 </div>
                             </div>
                         </div>
-
-                        {/* Google Font Import */}
 
                         <div className="space-y-2">
                             <div className="flex items-center justify-between mb-1">
@@ -355,7 +314,6 @@ export default function DesignEditor({
                             </div>
                         </div>
 
-                        {/* Font Source Labels */}
                         {fontUrl && (
                             <div className="space-y-1.5 p-4 rounded-xl bg-accent/5 border border-accent/20 animate-in fade-in slide-in-from-top-2">
                                 <label className="text-[8px] font-bold text-accent uppercase tracking-[0.2em]">Font CSS URL</label>
@@ -382,7 +340,7 @@ export default function DesignEditor({
                 </div>
 
                 {/* Preview Controls */}
-                <div className="p-8 pb-12">
+                <div className="pt-4">
                    <button 
                         onClick={() => setUseLongName(!useLongName)} 
                         className={`w-full py-5 rounded-2xl border text-[9px] font-bold uppercase tracking-[0.2em] transition-all ${useLongName ? 'bg-accent text-white border-accent shadow-xl shadow-accent/20' : 'bg-white/5 border-white/5 text-primary-dim hover:text-white hover:border-white/20'}`}
@@ -391,9 +349,10 @@ export default function DesignEditor({
                     </button>
                 </div>
             </div>
+            </div>
 
             {/* CANVAS AREA */}
-            <div className="flex-1 bg-grid relative flex flex-col justify-center items-center group/canvas p-12 min-h-0 min-w-0" ref={containerRef}>
+            <div className="flex-1 overflow-hidden bg-grid relative flex flex-col items-center justify-center p-4 md:p-8 lg:p-12" ref={containerRef}>
                 <div className="absolute top-8 left-8 z-10">
                     <div className="bg-bg/90 backdrop-blur border border-border text-[10px] font-mono px-4 py-2 text-zinc-500 uppercase tracking-widest flex items-center gap-3">
                         <div className="w-1.5 h-1.5 bg-accent" /> SCALE: {Math.round(scale * 100)}%
@@ -456,7 +415,7 @@ export default function DesignEditor({
                                     y={namePos.y}
                                     fill={textColor}
                                     fontSize={fontSize}
-                                    fontFamily={fontFamily.includes('-') ? fontFamily.split('-')[0] : fontFamily}
+                                    fontFamily={fontFamily}
                                     fontWeight={fontWeight === 'Bold' ? 'bold' : 'normal'}
                                     fontStyle={isItalic ? 'italic' : 'normal'}
                                     textAnchor={isCentered ? "middle" : "start"}
@@ -483,41 +442,7 @@ export default function DesignEditor({
                                 )}
                             </g>
 
-                            {/* Verify Element */}
-                            <g
-                                onPointerDown={(e) => handlePointerDown(e, 'verify')}
-                                style={{ cursor: 'grab' }}
-                            >
-                                <text
-                                    x={verifyPos.x}
-                                    y={verifyPos.y}
-                                    fill="#333333"
-                                    fontSize={Math.max(10, Math.floor(fontSize * 0.35))}
-                                    fontFamily={fontFamily.includes('-') ? fontFamily.split('-')[0] : fontFamily}
-                                    fontWeight={'bold'}
-                                    fontStyle={'normal'}
-                                    textAnchor={isCentered ? "middle" : "start"}
-                                    dominantBaseline="auto"
-                                    style={{
-                                        userSelect: 'none',
-                                    }}
-                                >
-                                    certgen.io/verify/ID-1234
-                                </text>
-                                {selectedId === 'verify' && (
-                                    <rect 
-                                        x={isCentered ? verifyPos.x - 100 : verifyPos.x}
-                                        y={verifyPos.y - Math.max(10, Math.floor(fontSize * 0.35))}
-                                        width={200}
-                                        height={Math.max(10, Math.floor(fontSize * 0.35)) * 1.5}
-                                        fill="none"
-                                        stroke="var(--color-accent)"
-                                        strokeWidth={1 / scale}
-                                        strokeDasharray={`${10 / scale},${5 / scale}`}
-                                        pointerEvents="none"
-                                    />
-                                )}
-                            </g>
+
                         </svg>
 
                     </div>

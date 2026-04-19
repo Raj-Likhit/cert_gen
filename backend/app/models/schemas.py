@@ -9,9 +9,6 @@ class GenerateRequest(BaseModel):
 class ConfigRequest(BaseModel):
     name_x: int
     name_y: int
-    qr_x: int
-    qr_y: int
-    qr_size: int
     font_family: Optional[str] = "Helvetica"
     text_color: Optional[str] = "#000000"
     event_name: Optional[str] = "Certificate of Participation"
@@ -21,6 +18,8 @@ class ConfigRequest(BaseModel):
     stroke_width: Optional[int] = 0
     stroke_color: Optional[str] = "#000000"
     font_size: Optional[int] = 48
+    font_url: Optional[str] = None
+    font_filename: Optional[str] = None
 
 class LoginRequest(BaseModel):
     password: str

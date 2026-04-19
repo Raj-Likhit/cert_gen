@@ -20,16 +20,20 @@ async def add_security_headers(request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    response.headers["Content-Security-Policy"] = "default-src 'self'; connect-src 'self' http://localhost:8000; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://*.supabase.co;"
+    response.headers["Content-Security-Policy"] = "default-src 'self' *; connect-src 'self' *; script-src 'self' 'unsafe-inline' 'unsafe-eval' *; style-src 'self' 'unsafe-inline' *; font-src 'self' data: *; img-src 'self' data: *;"
     return response
 
-# Rate Limiter
-limiter = Limiter(key_func=get_remote_address)
+from .core.limiter import limiter
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS - Restrict in production, but allow localhost for dev
-allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+allowed_origins = [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174"
+]
 
 app.add_middleware(
     CORSMiddleware,
@@ -41,17 +45,25 @@ app.add_middleware(
 
 # Assets
 os.makedirs("assets", exist_ok=True)
+# Mount with a wrapper to ensure CORS headers for local font loading
+@app.middleware("http")
+async def static_cors_middleware(request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/assets/"):
+        response.headers["Access-Control-Allow-Origin"] = "*"
+    return response
+
 app.mount("/assets", StaticFiles(directory="assets"), name="assets")
 
 @app.on_event("startup")
 async def startup_event():
     # Industrial Optimization: Pre-load templates and fonts into RAM
-    from .services.certificate_service import load_assets_to_cache
-    load_assets_to_cache()
+    from .services.asset_manager import initialize_assets
+    initialize_assets()
 
 # Routes
 app.include_router(router)
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("backend.app.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

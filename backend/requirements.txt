@@ -13,3 +13,4 @@ numpy
 qrcode
 slowapi
 watchfiles
+requests

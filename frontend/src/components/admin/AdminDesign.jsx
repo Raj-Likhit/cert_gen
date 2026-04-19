@@ -27,8 +27,6 @@ export default function AdminDesign() {
     // Design State (Hoisted to share w/ Editor)
     const [templateUrl, setTemplateUrl] = useState(null)
     const [namePos, setNamePos] = useState({ x: 500, y: 400 })
-    const [qrPos, setQrPos] = useState({ x: 800, y: 600 })
-    const [qrSize, setQrSize] = useState(120)
     const [fontFamily, setFontFamily] = useState('Helvetica')
     const [textColor, setTextColor] = useState('#000000')
     const [eventName, setEventName] = useState('Certificate of Participation')
@@ -39,6 +37,57 @@ export default function AdminDesign() {
     const [strokeWidth, setStrokeWidth] = useState(0)
     const [strokeColor, setStrokeColor] = useState('#000000')
     const [fontSize, setFontSize] = useState(48)
+    const [fontUrl, setFontUrl] = useState('')
+    const [fontFilename, setFontFilename] = useState('')
+    const [uploadedFont, setUploadedFont] = useState({
+        face: null,
+        objectUrl: null,
+        fileName: '',
+        loaded: false
+    });
+
+    const loadUploadedFont = async (file) => {
+        // Cleanup First
+        if (uploadedFont.objectUrl) {
+            URL.revokeObjectURL(uploadedFont.objectUrl);
+        }
+        if (uploadedFont.face) {
+            document.fonts.delete(uploadedFont.face);
+        }
+
+        const objectUrl = URL.createObjectURL(file);
+        const fontFamilyName = "CustomCertificateFont";
+
+        try {
+            const face = new FontFace(fontFamilyName, `url(${objectUrl})`);
+            
+            // Timeout Protection (5s)
+            const timeout = new Promise((_, reject) => {
+                setTimeout(() => reject(new Error("Font load timeout")), 5000);
+            });
+
+            await Promise.race([face.load(), timeout]);
+            document.fonts.add(face);
+
+            // Force Layout Reflow
+            await document.fonts.load(`16px ${fontFamilyName}`);
+            await document.fonts.ready;
+
+            setUploadedFont({
+                face,
+                objectUrl,
+                fileName: file.name,
+                loaded: true
+            });
+            
+            setFontFamily(fontFamilyName);
+            return fontFamilyName;
+        } catch (err) {
+            console.error("Font loading failure:", err);
+            URL.revokeObjectURL(objectUrl);
+            throw err;
+        }
+    };
 
     // CSV/Participants State
     const [csvFile, setCsvFile] = useState(null)
@@ -54,11 +103,11 @@ export default function AdminDesign() {
 
         api.get('/admin/config')
             .then(res => {
-                const cfg = res.data;
+                const cfg = res.data.config; // Access config object
                 if (cfg) {
-                    setNamePos(cfg.name_pos);
-                    setQrPos(cfg.qr_pos);
-                    setQrSize(cfg.qr_pos.size || 120);
+                    const x = cfg.name_pos?.x !== undefined ? cfg.name_pos.x : 500;
+                    const y = cfg.name_pos?.y !== undefined ? cfg.name_pos.y : 400;
+                    setNamePos({ x, y });
                     setFontFamily(cfg.font_family || 'Helvetica');
                     setTextColor(cfg.text_color || '#000000');
                     setEventName(cfg.event_name || 'Certificate of Participation');
@@ -67,7 +116,10 @@ export default function AdminDesign() {
                     setIsItalic(cfg.is_italic || false);
                     setStrokeWidth(cfg.stroke_width || 0);
                     setStrokeColor(cfg.stroke_color || '#000000');
+                    // Safety: default to 48 if stored as 0
                     setFontSize(cfg.font_size || 48);
+                    setFontUrl(cfg.font_url || '');
+                    setFontFilename(cfg.font_filename || '');
                 }
             })
             .catch(err => console.log("Config load error", err));
@@ -87,6 +139,35 @@ export default function AdminDesign() {
         checkTemplate();
         fetchParticipants();
     }, []);
+
+    // Dynamic Font Injection
+    useEffect(() => {
+        const styleId = 'dynamic-fonts-css';
+        let styleTag = document.getElementById(styleId);
+        if (!styleTag) {
+            styleTag = document.createElement('style');
+            styleTag.id = styleId;
+            document.head.appendChild(styleTag);
+        }
+
+        const fontRules = availableFonts
+            .filter(f => typeof f !== 'string' && f.type === 'custom')
+            .map(f => `
+                @font-face {
+                    font-family: '${f.name}';
+                    src: url('http://localhost:8000/assets/fonts/${f.filename}') format('truetype');
+                    font-weight: normal;
+                    font-style: normal;
+                }
+            `)
+            .join('\n');
+
+        styleTag.innerHTML = fontRules;
+
+        return () => {
+            // Optional: clean up on unmount or just let it persist
+        };
+    }, [availableFonts]);
 
     const fetchParticipants = async () => {
         setIsLoadingDb(true);
@@ -116,17 +197,56 @@ export default function AdminDesign() {
         }
     }
 
+    // Cleanup FontFace and ObjectURLs on unmount
+    useEffect(() => {
+        return () => {
+            if (uploadedFont.objectUrl) URL.revokeObjectURL(uploadedFont.objectUrl);
+            if (uploadedFont.face) document.fonts.delete(uploadedFont.face);
+        };
+    }, [uploadedFont]);
+
     const handleFontUpload = async (file) => {
-        const formData = new FormData()
-        formData.append('file', file)
+        const loadingToast = toast.loading(`Ingesting ${file.name}...`);
         try {
-            await api.post('/admin/upload-font', formData)
-            toast.success("Font Uploaded!")
-            // Refresh list
-            const res = await api.get('/admin/fonts')
-            if (res.data.fonts) setAvailableFonts(res.data.fonts)
+            // Immediate high-fidelity preview
+            await loadUploadedFont(file);
+
+            // Backend Sync
+            const formData = new FormData();
+            formData.append('file', file);
+            await api.post('/admin/upload-font', formData);
+            
+            setFontFilename(file.name);
+            toast.success("Font Active and Synced", { id: loadingToast });
+            
+            const res = await api.get('/admin/fonts');
+            if (res.data.fonts) setAvailableFonts(res.data.fonts);
         } catch (e) {
-            toast.error(e.message || "Font Upload Failed")
+            toast.error(e.message || "Font Pipeline Failure", { id: loadingToast });
+        }
+    };
+    
+    const handleImportGoogleFont = async (url) => {
+        const loadingToast = toast.get?.loading ? toast.loading("Importing font from Google...") : null;
+        try {
+            const res = await api.post('/admin/font-import-google', { url });
+            setFontUrl(url);
+            setFontFilename(''); // Clear filename if URL imported
+            
+            // Set first imported font as active if available
+            if (res.data.imported?.length > 0) {
+                setFontFamily(res.data.imported[0].name);
+            }
+            
+            if (loadingToast) toast.success("Font imported successfully!", { id: loadingToast });
+            else toast.success("Font imported successfully!");
+            // Refresh list
+            const fontsRes = await api.get('/admin/fonts');
+            if (fontsRes.data.fonts) setAvailableFonts(fontsRes.data.fonts);
+        } catch (e) {
+            const msg = e.response?.data?.detail || e.message || "Import Failed";
+            if (loadingToast) toast.error(msg, { id: loadingToast });
+            else toast.error(msg);
         }
     }
 
@@ -170,14 +290,16 @@ export default function AdminDesign() {
 
     const handleSaveConfig = async () => {
         try {
+            let savedFontFamily = fontFamily;
+            if (fontFamily === "CustomCertificateFont" && fontFilename) {
+                savedFontFamily = fontFilename.split('.')[0];
+            }
+
             // New Config Payload
-            await api.post('/admin/save-config', {
+            const payload = {
                 name_x: Math.round(namePos.x),
                 name_y: Math.round(namePos.y),
-                qr_x: Math.round(qrPos.x),
-                qr_y: Math.round(qrPos.y),
-                qr_size: qrSize,
-                font_family: fontFamily,
+                font_family: savedFontFamily,
                 text_color: textColor,
                 event_name: eventName,
                 is_centered: isCentered,
@@ -185,12 +307,19 @@ export default function AdminDesign() {
                 is_italic: isItalic,
                 stroke_width: strokeWidth,
                 stroke_color: strokeColor,
-                font_size: fontSize
-            })
+                font_size: fontSize || 48, // Never save 0
+                font_url: fontUrl,
+                font_filename: fontFilename
+            }
+            await api.post('/admin/save-config', payload)
             toast.success("Configuration Saved!")
         } catch (err) {
-            toast.error(err.message || "Save failed")
-            if (err.status === 401) setAuth(false); // Quick fail if token died
+            console.error("Save Error:", err)
+            const errorMsg = err.response?.data?.detail 
+                ? (typeof err.response.data.detail === 'string' ? err.response.data.detail : JSON.stringify(err.response.data.detail))
+                : (err.message || "Save failed")
+            toast.error(errorMsg)
+            if (err.response?.status === 401) setAuth(false)
         }
     }
 
@@ -202,6 +331,19 @@ export default function AdminDesign() {
             toast.success("Template Removed")
         } catch (err) {
             toast.error(err.message || "Delete Failed")
+        }
+    }
+
+    const handleDeleteFont = async () => {
+        if (!fontFilename || !confirm("Delete this font?")) return;
+        try {
+            await api.delete(`/admin/fonts/${fontFilename}`);
+            setFontFilename(null);
+            setFontUrl(null);
+            setFontFamily('Helvetica');
+            toast.success("Font Removed");
+        } catch (err) {
+            toast.error(err.message || "Failed to remove font");
         }
     }
 
@@ -309,15 +451,15 @@ export default function AdminDesign() {
         <div className="pb-20 h-screen flex flex-col box-border bg-bg text-primary font-sans">
 
             {/* Tab Navigation */}
-            <div className="flex gap-4 mb-0 border-b border-white/5 shrink-0 px-8 pt-8 bg-surface/30 backdrop-blur-3xl overflow-x-auto no-scrollbar">
-                <button onClick={() => setActiveTab('design')} className={`flex items-center gap-3 px-8 py-5 transition-all font-bold text-xs tracking-tight border-b-2 whitespace-nowrap ${activeTab === 'design' ? 'text-white border-white bg-white/5 shadow-[0_15px_30px_-15px_rgba(255,255,255,0.2)]' : 'text-primary-dim border-transparent hover:text-white'}`}>
-                    <LayoutTemplate className="w-4 h-4" /> Design Editor
+            <div className="flex gap-2 md:gap-4 mb-0 border-b border-white/5 shrink-0 px-4 md:px-8 pt-6 md:pt-8 bg-surface/30 backdrop-blur-3xl overflow-x-auto no-scrollbar">
+                <button onClick={() => setActiveTab('design')} className={`flex items-center gap-2 md:gap-3 px-4 md:px-8 py-4 md:py-5 transition-all font-bold text-[10px] md:text-xs tracking-tight border-b-2 whitespace-nowrap ${activeTab === 'design' ? 'text-white border-white bg-white/5 shadow-[0_15px_30px_-15px_rgba(255,255,255,0.2)]' : 'text-primary-dim border-transparent hover:text-white'}`}>
+                    <LayoutTemplate className="w-3.5 h-3.5 md:w-4 md:h-4" /> Design Editor
                 </button>
-                <button onClick={() => setActiveTab('participants')} className={`flex items-center gap-3 px-8 py-5 transition-all font-bold text-xs tracking-tight border-b-2 whitespace-nowrap ${activeTab === 'participants' ? 'text-white border-white bg-white/5 shadow-[0_15px_30px_-15px_rgba(255,255,255,0.2)]' : 'text-primary-dim border-transparent hover:text-white'}`}>
-                    <Users className="w-4 h-4" /> Participants
+                <button onClick={() => setActiveTab('participants')} className={`flex items-center gap-2 md:gap-3 px-4 md:px-8 py-4 md:py-5 transition-all font-bold text-[10px] md:text-xs tracking-tight border-b-2 whitespace-nowrap ${activeTab === 'participants' ? 'text-white border-white bg-white/5 shadow-[0_15px_30px_-15px_rgba(255,255,255,0.2)]' : 'text-primary-dim border-transparent hover:text-white'}`}>
+                    <Users className="w-3.5 h-3.5 md:w-4 md:h-4" /> Participants
                 </button>
-                <button onClick={() => setActiveTab('analytics')} className={`flex items-center gap-3 px-8 py-5 transition-all font-bold text-xs tracking-tight border-b-2 whitespace-nowrap ${activeTab === 'analytics' ? 'text-white border-white bg-white/5 shadow-[0_15px_30px_-15px_rgba(255,255,255,0.2)]' : 'text-primary-dim border-transparent hover:text-white'}`}>
-                    <AlertCircle className="w-4 h-4" /> Analytics
+                <button onClick={() => setActiveTab('analytics')} className={`flex items-center gap-2 md:gap-3 px-4 md:px-8 py-4 md:py-5 transition-all font-bold text-[10px] md:text-xs tracking-tight border-b-2 whitespace-nowrap ${activeTab === 'analytics' ? 'text-white border-white bg-white/5 shadow-[0_15px_30px_-15px_rgba(255,255,255,0.2)]' : 'text-primary-dim border-transparent hover:text-white'}`}>
+                    <AlertCircle className="w-3.5 h-3.5 md:w-4 md:h-4" /> Analytics
                 </button>
             </div>
 
@@ -329,8 +471,6 @@ export default function AdminDesign() {
                         onUpload={handleUpload}
                         onDelete={handleDeleteTemplate}
                         namePos={namePos} setNamePos={setNamePos}
-                        qrPos={qrPos} setQrPos={setQrPos}
-                        qrSize={qrSize} setQrSize={setQrSize}
                         onSave={handleSaveConfig}
                         onAutoDetect={handleAutoDetect}
                         fontFamily={fontFamily} setFontFamily={setFontFamily}
@@ -338,7 +478,9 @@ export default function AdminDesign() {
                         eventName={eventName} setEventName={setEventName}
                         availableFonts={availableFonts}
                         onFontUpload={handleFontUpload}
-                        isCentered={isCentered} 
+                        onFontDelete={handleDeleteFont}
+                        onGoogleFontImport={handleImportGoogleFont}
+                        isCentered={isCentered}  
                         setIsCentered={(val) => {
                             // Coordinate transformation for centering: x maps to the middle
                             // If switching to centered, x becomes the center point
@@ -350,6 +492,7 @@ export default function AdminDesign() {
                         strokeWidth={strokeWidth} setStrokeWidth={setStrokeWidth}
                         strokeColor={strokeColor} setStrokeColor={setStrokeColor}
                         fontSize={fontSize} setFontSize={setFontSize}
+                        fontUrl={fontUrl} fontFilename={fontFilename}
                     />
                 </div>
             )}
@@ -370,7 +513,7 @@ export default function AdminDesign() {
                             <div className="space-y-4">
                                 <label className="block text-[10px] font-bold text-primary-dim uppercase tracking-widest ml-1">Source File (.csv)</label>
                                 <div className="relative group/input">
-                                    <input type="file" onChange={handleCsvUpload} accept=".csv" className="w-full h-14 rounded-xl bg-white/5 border border-white/5 px-6 text-white text-sm file:hidden cursor-pointer flex items-center transition-all hover:bg-white/10" />
+                                    <input type="file" onChange={handleCsvUpload} accept=".csv" className="w-full h-14 rounded-xl bg-white/5 border border-white/5 px-6 text-transparent text-sm file:hidden cursor-pointer flex items-center transition-all hover:bg-white/10" />
                                     <div className="absolute inset-x-4 top-1/2 -translate-y-1/2 pointer-events-none flex items-center justify-between">
                                         <span className="text-[11px] font-mono text-white/20 group-hover/input:text-white/40 truncate pr-8">
                                             {csvFile ? csvFile.name : "Select Document..."}
@@ -408,13 +551,13 @@ export default function AdminDesign() {
 
                     {/* Right table panel */}
                     <div className="lg:col-span-3 flex flex-col overflow-hidden bg-grid">
-                        <div className="p-12 border-b border-white/5 bg-black/40 backdrop-blur-3xl flex justify-between items-end">
+                        <div className="p-8 md:p-12 border-b border-white/5 bg-black/40 backdrop-blur-3xl flex flex-col md:flex-row justify-between items-start md:items-end gap-6 md:gap-0">
                             <div className="space-y-2">
-                                <h3 className="text-4xl font-bold tracking-tighter text-white">Participants</h3>
+                                <h3 className="text-3xl md:text-4xl font-bold tracking-tighter text-white">Participants</h3>
                                 <p className="text-[10px] uppercase tracking-[0.4em] text-primary-dim font-bold">Synchronized Database State</p>
                             </div>
-                            <div className="text-right border-l border-white/10 pl-10 h-16 flex flex-col justify-end">
-                                <span className="text-5xl font-bold text-white tracking-tighter leading-none">
+                            <div className="text-left md:text-right border-l border-white/10 md:pl-10 h-auto md:h-16 flex flex-col justify-end">
+                                <span className="text-4xl md:text-5xl font-bold text-white tracking-tighter leading-none">
                                     {parsedData.length > 0 ? parsedData.length.toLocaleString() : (dbParticipants ? dbParticipants.length.toLocaleString() : 0)}
                                 </span>
                                 <span className="text-[10px] text-primary-dim font-bold mt-2 uppercase tracking-[0.2em] block">Total Records</span>
@@ -423,7 +566,7 @@ export default function AdminDesign() {
 
                         {parsedData.length > 0 || dbParticipants.length > 0 ? (
                             <div className="overflow-auto flex-1 custom-scrollbar">
-                                <div className="px-12 py-5 bg-black/60 border-b border-white/5 flex justify-between items-center sticky top-0 z-20 backdrop-blur-xl">
+                                <div className="px-8 md:px-12 py-4 md:py-5 bg-black/60 border-b border-white/5 flex justify-between items-center sticky top-0 z-20 backdrop-blur-xl">
                                     <span className="text-[10px] font-bold uppercase tracking-[0.3em] text-accent flex items-center gap-3">
                                         <div className="w-2 h-2 rounded-full bg-accent animate-pulse shadow-[0_0_10px_rgba(191,155,48,0.5)]" />
                                         {parsedData.length > 0 ? "Staging Environment" : "Database"}
@@ -431,30 +574,37 @@ export default function AdminDesign() {
                                     {parsedData.length > 0 && (
                                         <button
                                             onClick={() => { setCsvFile(null); setParsedData([]); }}
-                                            className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/40 hover:text-error transition flex items-center gap-3 border border-white/5 rounded-full px-5 py-2 bg-white/5 hover:bg-white/10"
+                                            className="text-[9px] md:text-[10px] font-bold uppercase tracking-[0.2em] text-white/40 hover:text-error transition flex items-center gap-2 md:gap-3 border border-white/5 rounded-full px-4 md:px-5 py-2 bg-white/5 hover:bg-white/10"
                                         >
-                                            <Trash2 className="w-3.5 h-3.5" /> Clear Import
+                                            <Trash2 className="w-3 h-3 md:w-3.5 md:h-3.5" /> <span className="hidden sm:inline">Clear Import</span>
                                         </button>
                                     )}
                                 </div>
-                                <table className="w-full text-left text-sm border-collapse">
-                                    <thead>
-                                        <tr className="border-b border-white/5 bg-white/[0.02]">
-                                            <th className="px-12 py-6 uppercase tracking-[0.3em] font-bold text-primary-dim text-[10px] w-32">ID</th>
-                                            <th className="px-12 py-6 uppercase tracking-[0.3em] font-bold text-primary-dim text-[10px]">Full Name</th>
-                                            <th className="px-12 py-6 uppercase tracking-[0.3em] font-bold text-primary-dim text-[10px]">Email Address</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-white/5">
-                                        {(parsedData.length > 0 ? parsedData : dbParticipants).slice(0, 1000).map((row, i) => (
-                                            <tr key={i} className="hover:bg-white/[0.03] transition-colors group">
-                                                <td className="px-12 py-5 font-mono text-zinc-600 group-hover:text-accent transition-colors">{(i + 1).toString().padStart(4, '0')}</td>
-                                                <td className="px-12 py-5 font-bold text-white group-hover:text-accent transition-colors">{row.name || row.full_name}</td>
-                                                <td className="px-12 py-5 text-zinc-500 font-mono text-xs group-hover:text-zinc-300 transition-colors uppercase tracking-widest">{row.email}</td>
+                                <div className="min-w-full inline-block align-middle">
+                                    <table className="w-full text-left text-sm border-collapse">
+                                        <thead>
+                                            <tr className="border-b border-white/5 bg-white/[0.02]">
+                                                <th className="px-8 md:px-12 py-5 md:py-6 uppercase tracking-[0.3em] font-bold text-primary-dim text-[10px] w-24 md:w-32">ID</th>
+                                                <th className="px-8 md:px-12 py-5 md:py-6 uppercase tracking-[0.3em] font-bold text-primary-dim text-[10px]">Full Name</th>
+                                                <th className="px-8 md:px-12 py-5 md:py-6 uppercase tracking-[0.3em] font-bold text-primary-dim text-[10px] hidden sm:table-cell">Email Address</th>
                                             </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
+                                        </thead>
+                                        <tbody className="divide-y divide-white/5">
+                                            {(parsedData.length > 0 ? parsedData : dbParticipants).slice(0, 1000).map((row, i) => (
+                                                <tr key={i} className="hover:bg-white/[0.03] transition-colors group">
+                                                    <td className="px-8 md:px-12 py-4 md:py-5 font-mono text-zinc-600 group-hover:text-accent transition-colors">{(i + 1).toString().padStart(4, '0')}</td>
+                                                    <td className="px-8 md:px-12 py-4 md:py-5">
+                                                        <div className="flex flex-col">
+                                                            <span className="font-bold text-white group-hover:text-accent transition-colors">{row.name || row.full_name}</span>
+                                                            <span className="sm:hidden text-[10px] font-mono text-zinc-500 uppercase tracking-widest mt-0.5">{row.email}</span>
+                                                        </div>
+                                                    </td>
+                                                    <td className="px-8 md:px-12 py-4 md:py-5 text-zinc-500 font-mono text-xs group-hover:text-zinc-300 transition-colors uppercase tracking-widest hidden sm:table-cell">{row.email}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
                             </div>
                         ) : (
                             <div className="flex-1 flex flex-col items-center justify-center space-y-10 group">
@@ -495,7 +645,6 @@ export default function AdminDesign() {
                                     <tr className="bg-white/5 border-b border-white/5">
                                         <th className="p-6 text-[10px] font-black uppercase tracking-widest text-primary-dim">Participant</th>
                                         <th className="p-6 text-[10px] font-black uppercase tracking-widest text-primary-dim text-center">Status</th>
-                                        <th className="p-6 text-[10px] font-black uppercase tracking-widest text-primary-dim text-right">Security Hash</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-white/5">
@@ -510,15 +659,11 @@ export default function AdminDesign() {
                                             <td className="p-6">
                                                 <div className="flex justify-center">
                                                     <span className={`px-4 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest shadow-lg ${p.is_claimed ? 'bg-green-500/20 text-green-400 border border-green-500/10' : 'bg-red-500/20 text-red-400 border border-red-500/10'}`}>
-                                                        {p.is_claimed ? 'Verified' : 'Pending'}
+                                                        {p.is_claimed ? 'Claimed' : 'Pending'}
                                                     </span>
                                                 </div>
                                             </td>
-                                            <td className="p-6 text-right">
-                                                <span className="text-[10px] font-mono text-white/20 truncate max-w-[120px] inline-block hover:text-white transition-colors cursor-help" title={p.cert_hash || 'No hash available'}>
-                                                    {p.cert_hash ? `${p.cert_hash.substring(0, 12)}...` : 'X-LOCK-PENDING'}
-                                                </span>
-                                            </td>
+
                                         </tr>
                                     ))}
                                 </tbody>
